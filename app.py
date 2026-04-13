@@ -32,8 +32,48 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* ── 全体フォント ── */
+    html, body, [class*="css"] { font-family: 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif; }
+
+    /* ── メトリックカード ── */
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #f8fbff 0%, #eef4fc 100%);
+        border: 1px solid #d0e4f7;
+        border-left: 4px solid #2563eb;
+        padding: 14px 16px;
+        border-radius: 10px;
+        box-shadow: 0 1px 4px rgba(37,99,235,0.08);
+    }
+    div[data-testid="stMetric"] label { color: #4b6a8a; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.03em; }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #1e3a5f; font-size: 1.6rem; font-weight: 700; }
+
+    /* ── タブ ── */
+    button[data-baseweb="tab"] { font-weight: 600; font-size: 0.88rem; }
+    button[data-baseweb="tab"][aria-selected="true"] { color: #2563eb; border-bottom-color: #2563eb; }
+
+    /* ── データフレーム ── */
     .stDataFrame { font-size: 12px; }
-    div[data-testid="stMetric"] { background: #f8f9fa; padding: 10px; border-radius: 8px; }
+    .stDataFrame thead th { background: #1e3a5f !important; color: white !important; font-weight: 600; }
+
+    /* ── ボタン ── */
+    button[kind="primary"] { background: #2563eb; border-radius: 8px; font-weight: 600; }
+    button[kind="primary"]:hover { background: #1d4ed8; }
+
+    /* ── サイドバー ── */
+    section[data-testid="stSidebar"] { background: #f0f5ff; }
+    section[data-testid="stSidebar"] .stMarkdown h3 { color: #1e3a5f; font-size: 0.9rem; }
+
+    /* ── 凡例バッジ ── */
+    .shift-badge {
+        display: inline-block; padding: 2px 10px; border-radius: 12px;
+        font-size: 0.8rem; font-weight: 600; margin: 2px;
+    }
+
+    /* ── セクション区切り ── */
+    hr { border: none; border-top: 2px solid #e2eaf5; margin: 1rem 0; }
+
+    /* ── 警告・成功バナー強化 ── */
+    div[data-testid="stAlert"] { border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -46,90 +86,70 @@ WEEKDAY_REV = {v: k for k, v in WEEKDAY_MAP.items()}
 # ============================================================
 # 日本看護協会 夜勤ガイドラインチェック
 # ============================================================
-def check_nursing_guidelines(schedule, names, tiers, r_dedicated):
+def check_nursing_guidelines(schedule, names, tiers, r_dedicated, night_hours=16):
     """
-    日本看護協会「夜勤・交代制勤務に関するガイドライン（2013年）」チェック
-    Returns:
-        violations: list of dict  — 違反（赤表示）
-        warnings:   list of dict  — 注意（黄表示）
-        ok_list:    list of str   — 適合スタッフ名
+    日本看護協会「夜勤・交代制勤務に関するガイドライン（2013年）」+
+    労基法準拠チェック
+    Args:
+        night_hours: 1夜勤あたりの時間数（二交代=16h, 三交代=8h）
     """
     violations = []
     warnings = []
     ok_list = []
 
     for s in names:
-        shifts = schedule[s]  # 0-indexed, len = num_days
+        shifts = schedule[s]
         is_dedicated = r_dedicated.get(s, False)
         issues = []
+        night_count = shifts.count(N)
 
         # ── 1. 月の夜勤回数（8回以内）────────────────────────────
-        night_count = shifts.count(N)
-        if is_dedicated:
-            # 専従はガイドライン上「夜勤専従者」扱いのため対象外
-            pass
-        elif night_count > 8:
-            issues.append({
-                "rule": "夜勤回数", "level": "violation",
-                "detail": f"{night_count}回（上限8回超過）"
-            })
-        elif night_count == 8:
-            issues.append({
-                "rule": "夜勤回数", "level": "warning",
-                "detail": f"{night_count}回（上限8回ちょうど）"
-            })
+        if not is_dedicated:
+            if night_count > 8:
+                issues.append({"rule": "夜勤回数", "level": "violation",
+                                "detail": f"{night_count}回（上限8回超過）"})
+            elif night_count == 8:
+                issues.append({"rule": "夜勤回数", "level": "warning",
+                                "detail": f"{night_count}回（上限8回ちょうど）"})
 
-        # ── 2. 連続夜勤（2回以内）───────────────────────────────
-        # N → A → (N → A ...) の繰り返しをカウント
-        # 3回以上連続する夜勤サイクルを検出
-        i = 0
-        consec = 0
-        max_consec = 0
-        consec_start = -1
+        # ── 2. 月夜勤時間72時間以内（日本看護協会ガイドライン）──
+        if not is_dedicated and night_hours > 0:
+            total_hours = night_count * night_hours
+            if total_hours > 72:
+                issues.append({"rule": "72時間規制", "level": "violation",
+                                "detail": f"月夜勤{total_hours}h（72h超過 / {night_hours}h×{night_count}回）"})
+            elif total_hours >= 64:
+                issues.append({"rule": "72時間規制", "level": "warning",
+                                "detail": f"月夜勤{total_hours}h（72h上限に近い）"})
+
+        # ── 3. 連続夜勤（2回以内）───────────────────────────────
+        i = 0; consec = 0; max_consec = 0
         while i < len(shifts):
             if shifts[i] == N:
-                if consec == 0:
-                    consec_start = i + 1  # 1-indexed day
-                consec += 1
-                max_consec = max(max_consec, consec)
-                i += 2  # N の翌日は A のためスキップ
+                consec += 1; max_consec = max(max_consec, consec); i += 2
             else:
-                consec = 0
-                i += 1
+                consec = 0; i += 1
         if max_consec > 2:
-            issues.append({
-                "rule": "連続夜勤", "level": "violation",
-                "detail": f"最大{max_consec}連続（上限2回超過）"
-            })
+            issues.append({"rule": "連続夜勤", "level": "violation",
+                           "detail": f"最大{max_consec}連続（上限2回超過）"})
 
-        # ── 3. 勤務間インターバル（11時間以上）──────────────────
-        # ハード制約で A→O/N が保証されているが念のため A→D を検出
-        interval_violations = []
-        for d in range(len(shifts) - 1):
-            if shifts[d] == A and shifts[d + 1] == D:
-                interval_violations.append(f"{d + 2}日")
-        if interval_violations:
-            issues.append({
-                "rule": "インターバル", "level": "violation",
-                "detail": f"明け翌日に日勤: {', '.join(interval_violations)}（11時間未満の疑い）"
-            })
+        # ── 4. 勤務間インターバル（11時間以上）──────────────────
+        iv = [f"{d+2}日" for d in range(len(shifts)-1) if shifts[d]==A and shifts[d+1]==D]
+        if iv:
+            issues.append({"rule": "インターバル", "level": "violation",
+                           "detail": f"明け翌日に日勤: {', '.join(iv)}（11時間未満の疑い）"})
 
-        # ── 4. 夜勤後の休息（明け+休みの連続）──────────────────
-        # N → A の翌日が必ず O/V/N であることを確認（A→D は上記で検出済み）
-        for d in range(len(shifts) - 1):
-            if shifts[d] == N and d + 1 < len(shifts) and shifts[d + 1] != A:
-                issues.append({
-                    "rule": "夜勤後の明け", "level": "violation",
-                    "detail": f"{d + 1}日: 夜勤翌日が明けでない（{shifts[d+1]}）"
-                })
+        # ── 5. 夜勤翌日の明け確認 ──────────────────────────────
+        for d in range(len(shifts)-1):
+            if shifts[d] == N and shifts[d+1] != A:
+                issues.append({"rule": "夜勤後の明け", "level": "violation",
+                               "detail": f"{d+1}日: 夜勤翌日が明けでない（{shifts[d+1]}）"})
 
         # ── 集計 ─────────────────────────────────────────────
-        v_issues = [x for x in issues if x["level"] == "violation"]
-        w_issues = [x for x in issues if x["level"] == "warning"]
-        for item in v_issues:
-            violations.append({"名前": s, "Tier": tiers[s], **item})
-        for item in w_issues:
-            warnings.append({"名前": s, "Tier": tiers[s], **item})
+        for item in issues:
+            rec = {"名前": s, "Tier": tiers[s], "夜勤回数": night_count,
+                   "月夜勤時間": f"{night_count * night_hours}h", **item}
+            (violations if item["level"] == "violation" else warnings).append(rec)
         if not issues:
             ok_list.append(s)
 
@@ -437,6 +457,13 @@ pref_consec = col6.number_input("推奨連勤", 1, 10, 4, key="inp_pref_consec")
 
 time_limit = st.sidebar.number_input("計算時間上限（秒）", 10, 600, 120, key="inp_time_limit")
 num_patterns = st.sidebar.number_input("生成パターン数", 1, 5, 3, key="inp_num_patterns")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚖ コンプライアンス設定")
+shift_system = st.sidebar.radio("交代制", ["二交代（16h夜勤）", "三交代（8h夜勤）"],
+                                 horizontal=False, key="inp_shift_system")
+night_hours = 16 if shift_system.startswith("二") else 8
+st.sidebar.caption(f"72時間規制: {night_hours}h×夜勤回数≦72h（≦{72//night_hours}回）")
 
 settings = {
     "year": year, "month": month,
@@ -774,21 +801,21 @@ with tab4:
 
         st.subheader(f"📊 {r_year}年{r_month}月 勤務表 — パターン {pat_idx + 1}")
 
-        night_counts = {}
-        for s in names:
-            nc = schedule[s].count(N)
-            if nc > 0:
-                night_counts[s] = nc
+        night_counts = {s: schedule[s].count(N) for s in names}
+        nc_regular = [v for s, v in night_counts.items()
+                      if r_weekly.get(s) is None and not r_dedicated.get(s, False)]
+        total_missed = sum(len(v) for v in missed.values())
+        violations_pre, _, _ = check_nursing_guidelines(
+            schedule, names, tiers, r_dedicated, night_hours)
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("公休日数", f"{r_public_off}日")
-        if night_counts:
-            nc_vals = [v for s, v in night_counts.items()
-                       if r_weekly.get(s) is None and not r_dedicated.get(s, False)]
-            if nc_vals:
-                col2.metric("夜勤均等", f"{min(nc_vals)}〜{max(nc_vals)}回")
-        col3.metric("未達希望", f"{sum(len(v) for v in missed.values())}件" if missed else "0件 ✓")
-        col4.metric("パターン", f"{pat_idx+1} / {len(results)}")
+        col2.metric("夜勤均等", f"{min(nc_regular)}〜{max(nc_regular)}回" if nc_regular else "—")
+        col3.metric("未達希望", f"{total_missed}件" if total_missed else "0件 ✓",
+                    delta="要確認" if total_missed else None, delta_color="inverse")
+        col4.metric("ガイドライン", "✅ 適合" if not violations_pre else f"🚨 {len(violations_pre)}件",
+                    delta="要対応" if violations_pre else None, delta_color="inverse")
+        col5.metric("パターン", f"{pat_idx+1} / {len(results)}")
 
         wdj = ["月", "火", "水", "木", "金", "土", "日"]
         fwd = date(r_year, r_month, 1).weekday()
@@ -824,8 +851,64 @@ with tab4:
                 return f"background-color: {bg}; color: {fg}; text-align: center; font-weight: {'bold' if val == N else 'normal'}"
             return "text-align: center"
 
-        styled = df.style.map(color_shifts, subset=day_cols)
-        st.dataframe(styled, use_container_width=True, height=600, hide_index=True)
+        # ── シフト表示モード切替 ─────────────────────────────
+        view_mode = st.radio("表示モード", ["👁 確認", "✏️ 手動編集"],
+                             horizontal=True, key=f"view_mode_{pat_idx}")
+
+        if view_mode == "👁 確認":
+            styled = df.style.map(color_shifts, subset=day_cols)
+            st.dataframe(styled, use_container_width=True, height=600, hide_index=True)
+        else:
+            st.caption("⚠ セルを直接編集できます。変更後「変更を保存」を押してください。")
+            shift_options_edit = [D, N, A, O, R, V]
+            col_cfg_edit = {
+                "名前": st.column_config.TextColumn("名前", disabled=True, width="small"),
+                "Tier": st.column_config.TextColumn("Tier", disabled=True, width="small"),
+            }
+            for dc in day_cols:
+                col_cfg_edit[dc] = st.column_config.SelectboxColumn(
+                    dc, options=shift_options_edit, width="small")
+            for col in ["日", "夜", "明", "休", "研", "暇", "公休"]:
+                col_cfg_edit[col] = st.column_config.NumberColumn(col, disabled=True, width="small")
+
+            edited_df = st.data_editor(
+                df, column_config=col_cfg_edit,
+                use_container_width=True, height=600, hide_index=True,
+                key=f"manual_edit_{pat_idx}"
+            )
+            if st.button("💾 変更を保存", key=f"save_edit_{pat_idx}"):
+                # edited_df の内容をresultsに反映
+                new_schedule = {}
+                for _, row in edited_df.iterrows():
+                    sname = row["名前"]
+                    new_schedule[sname] = [row[dc] for dc in day_cols]
+                st.session_state.results[pat_idx]["schedule"] = new_schedule
+                st.success("✅ 変更を保存しました。ページを再読み込みすると反映されます。")
+                st.rerun()
+
+        # ── 夜勤回数分布チャート ─────────────────────────────
+        with st.expander("📊 スタッフ別 夜勤・勤務統計", expanded=False):
+            stat_rows = []
+            for s in names:
+                sh = schedule[s]
+                total_h = night_counts[s] * night_hours
+                stat_rows.append({
+                    "名前": s, "Tier": tiers[s],
+                    "夜勤": night_counts[s],
+                    "月夜勤時間": total_h,
+                    "72h超": "🚨" if total_h > 72 else ("⚠" if total_h >= 64 else "✅"),
+                    "日勤": sh.count(D),
+                    "休み": sh.count(O) + sh.count(V),
+                    "研修": sh.count(R),
+                })
+            stat_df = pd.DataFrame(stat_rows)
+            st.dataframe(stat_df, use_container_width=True, hide_index=True)
+
+            st.markdown("**夜勤回数分布**")
+            chart_data = pd.DataFrame({
+                "夜勤回数": [night_counts[s] for s in names]
+            }, index=names)
+            st.bar_chart(chart_data, height=200)
 
         with st.expander("🌙 日別夜勤ペア", expanded=False):
             pair_data = []
@@ -846,23 +929,23 @@ with tab4:
         else:
             st.success("✓ 全希望達成")
 
-        # ── 日本看護協会ガイドラインチェック ─────────────────────
+        # ── 日本看護協会 + 労基法ガイドラインチェック ─────────
         violations, warnings_gl, ok_list = check_nursing_guidelines(
-            schedule, names, tiers, r_dedicated
+            schedule, names, tiers, r_dedicated, night_hours
         )
-        gl_label = "✅ ガイドライン適合" if not violations else f"🚨 ガイドライン違反 {len(violations)}件"
-        with st.expander(f"📋 日本看護協会 夜勤ガイドラインチェック — {gl_label}", expanded=bool(violations)):
-            st.caption("根拠: 日本看護協会「夜勤・交代制勤務に関するガイドライン」(2013年)")
+        gl_label = "✅ ガイドライン適合" if not violations else f"🚨 違反 {len(violations)}件"
+        with st.expander(f"⚖ 夜勤ガイドライン & 労基法チェック — {gl_label}", expanded=bool(violations)):
+            st.caption(f"根拠: 日本看護協会「夜勤・交代制勤務に関するガイドライン」(2013年) ／ 交代制: {shift_system}")
             gl_col1, gl_col2, gl_col3 = st.columns(3)
             gl_col1.metric("🚨 違反", f"{len(violations)}件",
-                           delta=None if not violations else "要対応",
-                           delta_color="inverse")
+                           delta="要対応" if violations else None, delta_color="inverse")
             gl_col2.metric("⚠ 注意", f"{len(warnings_gl)}件")
             gl_col3.metric("✅ 適合", f"{len(ok_list)}名")
 
             st.markdown("##### チェック項目")
             rules_info = [
                 ("夜勤回数", "月8回以内（夜勤専従者は対象外）"),
+                ("72時間規制", f"月夜勤時間72時間以内（{night_hours}h×回数）"),
                 ("連続夜勤", "連続夜勤2サイクル以内"),
                 ("インターバル", "勤務間隔11時間以上（明け翌日に日勤がないか）"),
                 ("夜勤後の明け", "夜勤翌日は必ず明けシフト"),
@@ -877,8 +960,9 @@ with tab4:
 
             if violations:
                 st.markdown("##### 🚨 違反一覧")
+                vcols = ["名前", "Tier", "夜勤回数", "月夜勤時間", "rule", "detail"]
                 st.dataframe(
-                    pd.DataFrame(violations)[["名前", "Tier", "rule", "detail"]]
+                    pd.DataFrame(violations)[[c for c in vcols if c in pd.DataFrame(violations).columns]]
                     .rename(columns={"rule": "項目", "detail": "内容"}),
                     use_container_width=True, hide_index=True
                 )
@@ -886,7 +970,7 @@ with tab4:
             if warnings_gl:
                 st.markdown("##### ⚠ 注意一覧")
                 st.dataframe(
-                    pd.DataFrame(warnings_gl)[["名前", "Tier", "rule", "detail"]]
+                    pd.DataFrame(warnings_gl)[["名前", "Tier", "夜勤回数", "月夜勤時間", "rule", "detail"]]
                     .rename(columns={"rule": "項目", "detail": "内容"}),
                     use_container_width=True, hide_index=True
                 )
