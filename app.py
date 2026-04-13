@@ -13,7 +13,8 @@ import jpholiday
 
 from shift_scheduler import (
     Staff, build_and_solve,
-    D, N, A, O, R, V, SHIFTS,
+    D, N, A, O, R, V, E, L, ST, LD, SN,
+    SHIFTS, DAY_SHIFTS, NIGHT_SHIFTS,
     TIER_A, TIER_AB, TIER_B, TIER_C, VALID_TIERS,
     _get_holidays_and_days_off, _write_one_sheet,
     SETTINGS_DEF, SETTINGS_KEYS,
@@ -101,23 +102,26 @@ def check_nursing_guidelines(schedule, names, tiers, r_dedicated, night_hours=16
         shifts = schedule[s]
         is_dedicated = r_dedicated.get(s, False)
         issues = []
-        night_count = shifts.count(N)
+        night_count = shifts.count(N)   # 通常夜勤
+        sn_count = shifts.count(SN)     # 短夜勤
+        total_night = night_count + sn_count
 
-        # ── 1. 月の夜勤回数（8回以内）────────────────────────────
+        # ── 1. 月の夜勤系回数（8回以内）────────────────────────────
         if not is_dedicated:
-            if night_count > 8:
+            if total_night > 8:
                 issues.append({"rule": "夜勤回数", "level": "violation",
-                                "detail": f"{night_count}回（上限8回超過）"})
-            elif night_count == 8:
+                                "detail": f"{total_night}回（N:{night_count}+準:{sn_count}）上限8回超過"})
+            elif total_night == 8:
                 issues.append({"rule": "夜勤回数", "level": "warning",
-                                "detail": f"{night_count}回（上限8回ちょうど）"})
+                                "detail": f"{total_night}回（N:{night_count}+準:{sn_count}）上限8回ちょうど"})
 
         # ── 2. 月夜勤時間72時間以内（日本看護協会ガイドライン）──
+        # N×night_hours + SN×12h
         if not is_dedicated and night_hours > 0:
-            total_hours = night_count * night_hours
+            total_hours = night_count * night_hours + sn_count * 12
             if total_hours > 72:
                 issues.append({"rule": "72時間規制", "level": "violation",
-                                "detail": f"月夜勤{total_hours}h（72h超過 / {night_hours}h×{night_count}回）"})
+                                "detail": f"月夜勤{total_hours}h（72h超過 / N:{night_count}×{night_hours}h+準:{sn_count}×12h）"})
             elif total_hours >= 64:
                 issues.append({"rule": "72時間規制", "level": "warning",
                                 "detail": f"月夜勤{total_hours}h（72h上限に近い）"})
@@ -146,9 +150,11 @@ def check_nursing_guidelines(schedule, names, tiers, r_dedicated, night_hours=16
                                "detail": f"{d+1}日: 夜勤翌日が明けでない（{shifts[d+1]}）"})
 
         # ── 集計 ─────────────────────────────────────────────
+        total_hours = night_count * night_hours + sn_count * 12
         for item in issues:
-            rec = {"名前": s, "Tier": tiers[s], "夜勤回数": night_count,
-                   "月夜勤時間": f"{night_count * night_hours}h", **item}
+            rec = {"名前": s, "Tier": tiers[s],
+                   "夜勤回数": f"N:{night_count}+準:{sn_count}",
+                   "月夜勤時間": f"{total_hours}h", **item}
             (violations if item["level"] == "violation" else warnings).append(rec)
         if not issues:
             ok_list.append(s)
@@ -173,7 +179,7 @@ def check_skill_pairing(schedule, names, tiers, num_days, year, month):
     ok_days = 0
 
     for d in range(num_days):
-        night_staff = [s for s in names if schedule[s][d] == N]
+        night_staff = [s for s in names if schedule[s][d] in NIGHT_SHIFTS]
         if not night_staff:
             ok_days += 1
             continue
@@ -256,14 +262,14 @@ def check_staffing_ratio(schedule, names, r_dedicated, r_weekly,
     ok_days = 0
     for d in range(num_days):
         wd = wdj[(fwd + d) % 7]
-        day_staff = sum(1 for s in names if schedule[s][d] == D)
+        day_staff = sum(1 for s in names if schedule[s][d] in DAY_SHIFTS)
         issues = []
         if day_staff < required:
-            issues.append(f"日勤{day_staff}人（必要{required}人）")
+            issues.append(f"日勤系{day_staff}人（必要{required}人）")
         if check_night:
-            night_staff = sum(1 for s in names if schedule[s][d] == N)
+            night_staff = sum(1 for s in names if schedule[s][d] in NIGHT_SHIFTS)
             if night_staff < required:
-                issues.append(f"夜勤{night_staff}人（必要{required}人）")
+                issues.append(f"夜勤系{night_staff}人（必要{required}人）")
         if issues:
             shortfalls.append({
                 "日": f"{d+1}日({wd})",
@@ -277,10 +283,30 @@ def check_staffing_ratio(schedule, names, r_dedicated, r_weekly,
     return shortfalls, ok_days, required
 
 
-SHIFT_DISPLAY = {D: "日", N: "夜", O: "休", R: "研",
-                 "夜不": "夜不", "休暇": "休暇", "明休": "明休"}
-SHIFT_REVERSE = {"日": D, "夜": N, "休": O, "研": R,
-                 "夜不": "夜不", "休暇": "休暇", "明休": "明休"}
+SHIFT_DISPLAY = {
+    D: "日", N: "夜", A: "明", O: "休", R: "研", V: "暇",
+    E: "早", L: "遅", ST: "短", LD: "長", SN: "準",
+    "夜不": "夜不", "休暇": "休暇", "明休": "明休",
+}
+SHIFT_REVERSE = {
+    "日": D, "夜": N, "明": A, "休": O, "研": R, "暇": V,
+    "早": E, "遅": L, "短": ST, "長": LD, "準": SN,
+    "夜不": "夜不", "休暇": "休暇", "明休": "明休",
+}
+# シフト説明（ツールチップ用）
+SHIFT_DESC = {
+    D: "日勤 (8:00〜17:00)",
+    N: "夜勤 (16:45〜翌9:00 / 16h)",
+    A: "明け（夜勤明け）",
+    O: "公休",
+    R: "研修",
+    V: "休暇",
+    E: "早出 (7:00〜16:00 / 8h)",
+    L: "遅出 (12:00〜21:00 / 8h)",
+    ST: "時短 (8:45〜16:00 / 6.25h) 育児・介護",
+    LD: "長日勤 (8:45〜21:00 / 12h)",
+    SN: "短夜勤 (17:00〜翌5:00 / 12h)",
+}
 
 
 def _staff_to_df(staff_list):
@@ -1026,7 +1052,7 @@ with tab2:
         header_map[str(d)] = f"{d}({wd}{suffix})"
 
     col_config = {"名前": st.column_config.TextColumn("名前", disabled=True, width="medium")}
-    shift_options = ["", "日", "夜", "休", "研", "夜不", "休暇", "明休"]
+    shift_options = ["", "日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]
     for d in range(1, num_days + 1):
         col_config[str(d)] = st.column_config.SelectboxColumn(
             header_map[str(d)], options=shift_options, width="small")
@@ -1170,7 +1196,8 @@ with tab4:
 
         st.subheader(f"📊 {r_year}年{r_month}月 勤務表 — パターン {pat_idx + 1}")
 
-        night_counts = {s: schedule[s].count(N) for s in names}
+        # 夜勤系合計（N + SN）
+        night_counts = {s: sum(schedule[s].count(t) for t in NIGHT_SHIFTS) for s in names}
         nc_regular = [v for s, v in night_counts.items()
                       if r_weekly.get(s) is None and not r_dedicated.get(s, False)]
         total_missed = sum(len(v) for v in missed.values())
@@ -1199,10 +1226,19 @@ with tab4:
         fwd = date(r_year, r_month, 1).weekday()
 
         shift_colors = {
-            D: "#FFFFFF", N: "#4472C4", A: "#FFF2CC",
-            O: "#E2EFDA", R: "#E8D5F5", V: "#F4CCCC"
+            D: "#FFFFFF",   # 日勤: 白
+            N: "#4472C4",   # 夜勤: 青
+            A: "#FFF2CC",   # 明け: 薄黄
+            O: "#E2EFDA",   # 休み: 薄緑
+            R: "#E8D5F5",   # 研修: 薄紫
+            V: "#F4CCCC",   # 休暇: 薄赤
+            E:  "#E6F3FF",  # 早出: 水色
+            L:  "#FFF0E0",  # 遅出: 薄橙
+            ST: "#F0FFF0",  # 時短: 薄緑系
+            LD: "#FFF5CC",  # 長日勤: 薄黄緑
+            SN: "#2E75B6",  # 短夜勤: 濃青
         }
-        shift_text_colors = {N: "#FFFFFF"}
+        shift_text_colors = {N: "#FFFFFF", SN: "#FFFFFF"}
 
         day_cols = [f"{d+1}" for d in range(r_num_days)]
         table_data = []
@@ -1213,7 +1249,12 @@ with tab4:
             counts = {t: schedule[s].count(t) for t in SHIFTS}
             row["日"] = counts[D]
             row["夜"] = counts[N]
+            row["準"] = counts[SN]
             row["明"] = counts[A]
+            row["早"] = counts[E]
+            row["遅"] = counts[L]
+            row["長"] = counts[LD]
+            row["短"] = counts[ST]
             row["休"] = counts[O]
             row["研"] = counts[R]
             row["暇"] = counts[V]
@@ -1238,7 +1279,7 @@ with tab4:
             st.dataframe(styled, use_container_width=True, height=600, hide_index=True)
         else:
             st.caption("⚠ セルを直接編集できます。変更後「変更を保存」を押してください。")
-            shift_options_edit = [D, N, A, O, R, V]
+            shift_options_edit = [D, N, SN, A, E, L, LD, ST, O, R, V]
             col_cfg_edit = {
                 "名前": st.column_config.TextColumn("名前", disabled=True, width="small"),
                 "Tier": st.column_config.TextColumn("Tier", disabled=True, width="small"),
@@ -1246,7 +1287,7 @@ with tab4:
             for dc in day_cols:
                 col_cfg_edit[dc] = st.column_config.SelectboxColumn(
                     dc, options=shift_options_edit, width="small")
-            for col in ["日", "夜", "明", "休", "研", "暇", "公休"]:
+            for col in ["日", "夜", "準", "明", "早", "遅", "長", "短", "休", "研", "暇", "公休"]:
                 col_cfg_edit[col] = st.column_config.NumberColumn(col, disabled=True, width="small")
 
             edited_df = st.data_editor(
@@ -1269,15 +1310,19 @@ with tab4:
             stat_rows = []
             for s in names:
                 sh = schedule[s]
-                total_h = night_counts[s] * night_hours
+                n_cnt = sh.count(N)
+                sn_cnt = sh.count(SN)
+                total_h = n_cnt * night_hours + sn_cnt * 12
                 stat_rows.append({
                     "名前": s, "Tier": tiers[s],
-                    "夜勤": night_counts[s],
-                    "月夜勤時間": total_h,
-                    "72h超": "🚨" if total_h > 72 else ("⚠" if total_h >= 64 else "✅"),
+                    "夜勤(N)": n_cnt,
+                    "短夜勤(準)": sn_cnt,
+                    "月夜勤時間": f"{total_h}h",
+                    "72h": "🚨" if total_h > 72 else ("⚠" if total_h >= 64 else "✅"),
+                    "早出": sh.count(E), "遅出": sh.count(L),
+                    "長日勤": sh.count(LD), "時短": sh.count(ST),
                     "日勤": sh.count(D),
                     "休み": sh.count(O) + sh.count(V),
-                    "研修": sh.count(R),
                 })
             stat_df = pd.DataFrame(stat_rows)
             st.dataframe(stat_df, use_container_width=True, hide_index=True)
@@ -1293,10 +1338,15 @@ with tab4:
             for d in range(r_num_days):
                 wd = wdj[(fwd + d) % 7]
                 hol = "祝" if (d+1) in r_holidays else ("★" if (d+1) in r_weekends else "")
-                nn = [s for s in names if schedule[s][d] == N]
+                nn_n  = [s for s in names if schedule[s][d] == N]
+                nn_sn = [s for s in names if schedule[s][d] == SN]
+                members = (
+                    [f"{s}({tiers[s]})" for s in nn_n] +
+                    [f"{s}({tiers[s]})[準]" for s in nn_sn]
+                )
                 pair_data.append({
                     "日": f"{d+1}日({wd}{hol})",
-                    "夜勤メンバー": " + ".join(f"{s}({tiers[s]})" for s in nn),
+                    "夜勤メンバー": " + ".join(members) if members else "—",
                 })
             st.dataframe(pd.DataFrame(pair_data), use_container_width=True, hide_index=True)
 
@@ -1409,9 +1459,18 @@ with tab4:
 
         with st.expander("📈 日別集計", expanded=False):
             summary_data = {"日付": [f"{d+1}" for d in range(r_num_days)]}
-            for label, shift in [("日勤", D), ("夜勤", N), ("明け", A), ("休み", O), ("研修", R)]:
+            for label, shift in [
+                ("日勤", D), ("夜勤", N), ("短夜勤", SN), ("明け", A),
+                ("早出", E), ("遅出", L), ("長日勤", LD), ("時短", ST),
+                ("休み", O), ("研修", R),
+            ]:
                 summary_data[label] = [sum(1 for s in names if schedule[s][d] == shift)
                                         for d in range(r_num_days)]
+            # 日勤系合計列を追加
+            summary_data["日勤系計"] = [
+                sum(1 for s in names if schedule[s][d] in DAY_SHIFTS)
+                for d in range(r_num_days)
+            ]
             st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
         with st.expander("🔧 ソルバーログ"):

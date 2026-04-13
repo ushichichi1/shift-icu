@@ -55,8 +55,22 @@ INPUT_FILE = os.path.join(BASE_DIR, "勤務表_入力.xlsx")
 CRED_FILE = os.path.join(BASE_DIR, "credentials.json")
 
 D = "日"; N = "夜"; A = "明"; O = "休"; R = "研"; V = "暇"
-SHIFTS = [D, N, A, O, R, V]
-VALID_REQUEST = {D, N, O, R, "夜不", "休暇", "明休"}
+# 拡張勤務形態
+E  = "早"   # 早出: 7:00〜16:00 (8h) 日勤系
+L  = "遅"   # 遅出: 12:00〜21:00 (8h) 日勤系
+ST = "短"   # 時短: 8:45〜16:00 (6.25h) 育児・介護対応
+LD = "長"   # 長日勤: 8:45〜21:00 (12h) 翌日休推奨
+SN = "準"   # 短夜勤: 17:00〜翌5:00 (12h) 夜勤系・翌日明け
+
+SHIFTS = [D, N, A, O, R, V, E, L, ST, LD, SN]
+# 日勤系シフト（日勤人数カウントに含む）
+DAY_SHIFTS = [D, E, L, ST, LD]
+# 夜勤系シフト（夜勤人数カウントに含む）
+NIGHT_SHIFTS = [N, SN]
+# 夜勤系ごとの時間数（72h計算用）
+NIGHT_HOURS_MAP = {N: 16, SN: 12}  # デフォルト値 / 実際は設定値で上書き
+
+VALID_REQUEST = {D, N, O, R, E, L, ST, LD, SN, "夜不", "休暇", "明休"}
 TIER_A = "A"; TIER_AB = "AB"; TIER_B = "B"; TIER_C = "C"
 VALID_TIERS = {TIER_A, TIER_AB, TIER_B, TIER_C}
 MAX_REQUEST_DAYS = 7
@@ -78,12 +92,17 @@ BDR_REQ = _B(left=_S(style="medium", color="FF6600"),
              bottom=_S(style="medium", color="FF6600"))
 FH  = _PF(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 FS  = {
-    D: _PF(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
-    N: _PF(start_color="4472C4", end_color="4472C4", fill_type="solid"),
-    A: _PF(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
-    O: _PF(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"),
-    R: _PF(start_color="E8D5F5", end_color="E8D5F5", fill_type="solid"),
-    V: _PF(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid"),
+    D:  _PF(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),  # 日勤: 白
+    N:  _PF(start_color="4472C4", end_color="4472C4", fill_type="solid"),  # 夜勤: 青
+    A:  _PF(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),  # 明け: 薄黄
+    O:  _PF(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"),  # 休み: 薄緑
+    R:  _PF(start_color="E8D5F5", end_color="E8D5F5", fill_type="solid"),  # 研修: 薄紫
+    V:  _PF(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid"),  # 休暇: 薄赤
+    "早": _PF(start_color="E6F3FF", end_color="E6F3FF", fill_type="solid"),  # 早出: 水色
+    "遅": _PF(start_color="FFF0E0", end_color="FFF0E0", fill_type="solid"),  # 遅出: 薄橙
+    "短": _PF(start_color="F0FFF0", end_color="F0FFF0", fill_type="solid"),  # 時短: 薄緑系
+    "長": _PF(start_color="FFF5CC", end_color="FFF5CC", fill_type="solid"),  # 長日勤: 薄黄緑
+    "準": _PF(start_color="2E75B6", end_color="2E75B6", fill_type="solid"),  # 短夜勤: 濃青
 }
 FT = {
     TIER_A:  _PF(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid"),
@@ -803,18 +822,27 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     for s in names:
         for d in days:
             prob += pulp.lpSum(x[s, d, t] for t in SHIFTS) == 1
-    # 夜→明 は全員共通
+    # 夜(N)→明(A) は全員共通
     for s in names:
         for d in days[:-1]:
             prob += x[s, d, N] <= x[s, d+1, A]
+    # 短夜勤(SN, 12h)→翌日: 明け or 休（日勤系は不可）
+    for s in names:
+        for d in days[:-1]:
+            prob += x[s, d, SN] <= x[s, d+1, A] + x[s, d+1, O]
+    # 長日勤(LD, 12h)→翌日: 休推奨（ソフト: 翌日勤務にペナルティで対応）
+    # ハードには強制しないが、明け(A)は禁止（夜勤していないのでAは不自然）
+    for s in names:
+        for d in days[:-1]:
+            prob += x[s, d, LD] + x[s, d+1, A] <= 1
     # 明→休 は通常スタッフ（専従は明→夜も可）
     for s in names:
         if dedicated.get(s):
             # 専従: 明の翌日は 夜 or 休 のみ（日勤・研修不可）
             for d in days[:-1]:
-                prob += x[s, d, A] <= x[s, d+1, O] + x[s, d+1, N]
+                prob += x[s, d, A] <= x[s, d+1, O] + x[s, d+1, N] + x[s, d+1, SN]
         else:
-            # 通常: 明の翌日は休のみ（夜明休パターン）
+            # 通常: 明の翌日は休のみ
             for d in days[:-1]:
                 prob += x[s, d, A] <= x[s, d+1, O]
     # 専従のみ: 夜明は連続2回まで（夜明夜明 OK、夜明夜明夜 NG）
@@ -877,20 +905,25 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             prob += x[s, 0, A] == 0
         for d in days[1:]:
             prob += x[s, d, A] <= x[s, d-1, N]
-    # 通常スタッフ: 休→夜 禁止（専従は休→夜OK）
+    # 通常スタッフ: 休→夜(N)/短夜勤(SN) 禁止（専従は休→夜OK）
     for s in names:
         if dedicated.get(s):
             continue
         for d in days[:-1]:
             prob += x[s, d, O] + x[s, d+1, N] <= 1
-    # 夜勤専従: 希望がない限り日勤なし（夜/明/休のみ）
+            prob += x[s, d, O] + x[s, d+1, SN] <= 1
+    # 夜勤専従: 希望がない限り日勤系なし（夜/明/休のみ）
     for s in fulltime:
         if dedicated[s]:
             day_reqs = {d for d, t in requests.get(s, {}).items() if t == D}
             for d in days:
                 if (d + 1) not in day_reqs:
                     prob += x[s, d, D] == 0
-                prob += x[s, d, R] == 0  # 専従は研修なし
+                prob += x[s, d, R] == 0   # 専従は研修なし
+                prob += x[s, d, E] == 0   # 専従は早出なし
+                prob += x[s, d, L] == 0   # 専従は遅出なし
+                prob += x[s, d, ST] == 0  # 専従は時短なし
+                prob += x[s, d, LD] == 0  # 専従は長日勤なし
     # 休暇(V)日の事前計算（パートタイム目標調整・V制約で使用）
     vacation_days = {}  # {staff_name: set of day_indices}
     for s, reqs_s in requests.items():
@@ -901,16 +934,18 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
                 vacation_days.setdefault(s, set()).add(day_num - 1)
 
     # 日勤最低人数（ソフト制約: 不足時はペナルティ）
+    # 早出・遅出・時短・長日勤も日勤系としてカウント
     day_short = {}
     for d in days:
-        day_sum = pulp.lpSum(x[s, d, D] for s in names)
+        day_sum = pulp.lpSum(x[s, d, t] for s in names for t in DAY_SHIFTS)
         ds = pulp.LpVariable(f"day_short_{d}", lowBound=0)
         prob += ds >= min_day - day_sum
         day_short[d] = ds
         # 最低保証: 少なくとも2人は必要（ハード）
         prob += day_sum >= 2
+    # 夜勤人数: 夜勤(N) + 短夜勤(SN) の合計
     for d in days:
-        prob += pulp.lpSum(x[s, d, N] for s in names) == night_count
+        prob += pulp.lpSum(x[s, d, t] for s in names for t in NIGHT_SHIFTS) == night_count
     # 夜勤Min/Max + 均等配分
     # Min=ハード制約（最低回数）、残り枠を均等配分、Max=ソフト制約
     ft_non_ded = [s for s in fulltime if not dedicated[s]]
@@ -933,7 +968,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     night_min_miss = {}
     night_max_over = {}
     for s in fulltime:
-        total_n = pulp.lpSum(x[s, d, N] for d in days)
+        # 夜勤系合計（N + SN）
+        total_n = pulp.lpSum(x[s, d, t] for d in days for t in NIGHT_SHIFTS)
         if dedicated[s]:
             # 専従: Max制約のみ（ハード）
             s_max = night_max[s] if night_max[s] is not None else max_n_ded
@@ -955,23 +991,25 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         prob += nm_over >= total_n - s_max
         night_max_over[s] = nm_over
     # 72時間規制（日本看護協会ガイドライン）
-    # night_hours: 1夜勤あたりの時間数（二交代=16h, 三交代=8h）
+    # N=night_hours h, SN=12h として月合計時間を計算
     # night_72h_mode: "strict"=ハード制約, "soft"=ペナルティ, "none"=チェックなし
-    night_72h_max = 72 // night_hours  # 上限回数（16h→4回, 8h→9回）
+    sn_hours = 12  # 短夜勤は常に12h
     night_72h_over = {}  # softモード用ペナルティ変数
     if night_72h_mode in ("strict", "soft"):
         for s in fulltime:
             if dedicated[s]:
                 continue  # 夜勤専従は対象外
-            total_n = pulp.lpSum(x[s, d, N] for d in days)
+            # 月合計夜勤時間 = N回数×night_hours + SN回数×12
+            total_h_expr = (night_hours * pulp.lpSum(x[s, d, N] for d in days)
+                            + sn_hours  * pulp.lpSum(x[s, d, SN] for d in days))
             if night_72h_mode == "strict":
-                prob += total_n <= night_72h_max
+                prob += total_h_expr <= 72
             else:  # soft
                 v72 = pulp.LpVariable(f"n72over_{s}", lowBound=0)
-                prob += v72 >= total_n - night_72h_max
+                prob += v72 >= total_h_expr - 72
                 night_72h_over[s] = v72
         mode_label = "ハード制約" if night_72h_mode == "strict" else "ソフト制約"
-        print(f"  72時間規制({night_hours}h/夜勤): 上限{night_72h_max}回 [{mode_label}]")
+        print(f"  72時間規制: N×{night_hours}h + 準×{sn_hours}h ≦ 72h [{mode_label}]")
 
     for s in parttime:
         for d in days:
@@ -1114,20 +1152,21 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         a_ft = [n for n in a_staff if weekly[n] is None]
         for d in days:
             if a_ft:
-                prob += pulp.lpSum(x[s, d, N] for s in a_ft) + a_miss[d] >= 1
+                # N または SN どちらかにAスタッフが入っていればOK
+                prob += pulp.lpSum(x[s, d, t] for s in a_ft for t in NIGHT_SHIFTS) + a_miss[d] >= 1
             else:
                 prob += a_miss[d] == 1
     else:
         for d in days:
             prob += a_miss[d] == 1
 
-    # 夜勤均等配分: 通常スタッフ間の最大-最小を最小化
+    # 夜勤均等配分: 夜勤系(N+SN)の合計で均等化
     night_dev = {}
     if ft_non_ded:
         n_max_var = pulp.LpVariable("n_eq_max", lowBound=0)
         n_min_var = pulp.LpVariable("n_eq_min", lowBound=0, upBound=num_days)
         for s in ft_non_ded:
-            total = pulp.lpSum(x[s, d, N] for d in days)
+            total = pulp.lpSum(x[s, d, t] for d in days for t in NIGHT_SHIFTS)
             prob += n_max_var >= total
             prob += n_min_var <= total
     else:
@@ -1193,8 +1232,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         for i in range(len(periods)):
             for j in range(i+1, len(periods)):
                 night_spread[ns_idx] = pulp.LpVariable(f"nsprd_{ns_idx}", lowBound=0)
-                ni = pulp.lpSum(x[s, d, N] for d in periods[i])
-                nj = pulp.lpSum(x[s, d, N] for d in periods[j])
+                ni = pulp.lpSum(x[s, d, t] for d in periods[i] for t in NIGHT_SHIFTS)
+                nj = pulp.lpSum(x[s, d, t] for d in periods[j] for t in NIGHT_SHIFTS)
                 prob += night_spread[ns_idx] >= ni - nj
                 prob += night_spread[ns_idx] >= nj - ni
                 ns_idx += 1
@@ -1266,12 +1305,12 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         _print_result(pat_num, schedule, names, tiers, weekly, parttime,
                       days, holidays, weekends, public_off, min_day,
                       a_miss, bc_pen, missed_requests, day_short, year, month)
-        # 夜勤均等度表示
-        nd_counts = {s: schedule[s].count(N) for s in ft_non_ded}
+        # 夜勤均等度表示（N+SN合計）
+        nd_counts = {s: sum(schedule[s].count(t) for t in NIGHT_SHIFTS) for s in ft_non_ded}
         if nd_counts:
             nd_min_v = min(nd_counts.values())
             nd_max_v = max(nd_counts.values())
-            print(f"  夜勤均等: {nd_min_v}〜{nd_max_v}回 (差{nd_max_v - nd_min_v})")
+            print(f"  夜勤均等(N+準): {nd_min_v}〜{nd_max_v}回 (差{nd_max_v - nd_min_v})")
 
         result = {
             "schedule": schedule, "names": names, "tiers": tiers,
@@ -1289,7 +1328,7 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             current_night = {}
             for s in fulltime:
                 for d in days:
-                    current_night[(s, d)] = 1 if schedule[s][d] == N else 0
+                    current_night[(s, d)] = 1 if schedule[s][d] in NIGHT_SHIFTS else 0
 
             prev_solutions.append(current_night)
 
@@ -1312,15 +1351,16 @@ def _print_result(pat_num, schedule, names, tiers, weekly, parttime,
     print(f"\n{'='*55}")
     print(f"  パターン {pat_num} - スタッフ別統計 (公休{public_off}日)")
     print(f"{'='*55}")
-    hdr = f"{'名前':>6} {'Tier':>4} {'日':>3} {'夜':>3} {'明':>3} {'休':>3} {'研':>3} {'暇':>3} {'公休':>4}"
+    hdr = f"{'名前':>6} {'Tier':>4} {'日':>3} {'夜':>3} {'準':>3} {'明':>3} {'早':>3} {'遅':>3} {'長':>3} {'短':>3} {'休':>3} {'研':>3} {'暇':>3} {'公休':>4}"
     if parttime:
         hdr += f" {'週':>3}"
     print(hdr)
     print("-" * len(hdr))
     for s in names:
         c = {t: schedule[s].count(t) for t in SHIFTS}
-        ko = c[O] + c[V]  # 公休 = 休 + 暇
-        line = f"{s:>6} {tiers[s]:>4} {c[D]:>3} {c[N]:>3} {c[A]:>3} {c[O]:>3} {c[R]:>3} {c[V]:>3} {ko:>4}"
+        ko = c[O] + c[V]
+        line = (f"{s:>6} {tiers[s]:>4} {c[D]:>3} {c[N]:>3} {c[SN]:>3} {c[A]:>3}"
+                f" {c[E]:>3} {c[L]:>3} {c[LD]:>3} {c[ST]:>3} {c[O]:>3} {c[R]:>3} {c[V]:>3} {ko:>4}")
         if parttime:
             w = weekly[s]
             line += f" {f'週{w}' if w else '':>4}"
@@ -1407,7 +1447,7 @@ def _write_one_sheet(wb, result, sheet_title):
         cw.font = FONT_RS if is_special else Font(size=9)
 
     sc = num_days + 3
-    for i, label in enumerate(["日", "夜", "明", "休", "研", "暇", "計"]):
+    for i, label in enumerate(["日", "夜", "準", "明", "早", "遅", "長", "短", "休", "研", "暇", "夜計"]):
         c = ws.cell(row=RD, column=sc+i, value=label)
         c.font = FONT_H; c.alignment = CTR; c.fill = FH; c.border = BDR
 
@@ -1473,7 +1513,10 @@ def _write_one_sheet(wb, result, sheet_title):
                 cell.comment = Comment(f"希望: {req_label}", "シフト作成")
 
         counts = {sh: schedule[s].count(sh) for sh in SHIFTS}
-        for i, v in enumerate([counts[D], counts[N], counts[A], counts[O], counts[R], counts[V], counts[D]+counts[N]]):
+        night_total = counts[N] + counts[SN]
+        for i, v in enumerate([counts[D], counts[N], counts[SN], counts[A],
+                                counts[E], counts[L], counts[LD], counts[ST],
+                                counts[O], counts[R], counts[V], night_total]):
             c = ws.cell(row=row, column=sc+i, value=v)
             c.alignment = CTR; c.border = BDR
         row += 1
@@ -1481,15 +1524,20 @@ def _write_one_sheet(wb, result, sheet_title):
     row += 1
     ws.cell(row=row, column=1, value="日別集計").font = FONT_H
     row += 1
-    for tl2, ts in [("日勤計", D), ("夜勤計", N), ("明け計", A), ("休み計", O), ("研修計", R), ("休暇計", V)]:
+    for tl2, ts in [("日勤計", D), ("夜勤計", N), ("短夜勤計", SN), ("明け計", A),
+                    ("早出計", E), ("遅出計", L), ("長日勤計", LD), ("時短計", ST),
+                    ("休み計", O), ("研修計", R), ("休暇計", V)]:
         ws.cell(row=row, column=1, value=tl2).font = FONT_H
         ws.cell(row=row, column=1).border = BDR
         for d in range(num_days):
             cnt = sum(1 for s in names if schedule[s][d] == ts)
             cell = ws.cell(row=row, column=d+3, value=cnt)
             cell.alignment = CTR; cell.border = BDR
-            if ts == D and cnt < min_day:
-                cell.fill = _PF(start_color="FF9999", end_color="FF9999", fill_type="solid")
+            # 日勤系合計が最低人数を下回る場合に警告色
+            if ts == D:
+                day_total = sum(1 for s in names if schedule[s][d] in DAY_SHIFTS)
+                if day_total < min_day:
+                    cell.fill = _PF(start_color="FF9999", end_color="FF9999", fill_type="solid")
         row += 1
 
     row += 1
@@ -1499,10 +1547,10 @@ def _write_one_sheet(wb, result, sheet_title):
         ws.cell(row=row, column=1, value=lbl).font = Font(bold=True, size=9)
         ws.cell(row=row, column=1).border = BDR
         for d in range(num_days):
-            nm = [s for s in names if schedule[s][d] == N]
+            nm = [s for s in names if schedule[s][d] in NIGHT_SHIFTS]
             cell = ws.cell(row=row, column=d+3, value="/".join(fn(s) for s in nm))
             cell.alignment = CTR; cell.border = BDR; cell.font = Font(size=8)
-            if lbl == "Tier" and not any(tiers[s] == TIER_A for s in nm):
+            if lbl == "Tier" and not any(tiers[s] in (TIER_A, TIER_AB) for s in nm):
                 cell.fill = _PF(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
         row += 1
 
