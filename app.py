@@ -905,8 +905,13 @@ def _parse_uploaded_excel(uploaded_file, year, month):
             req_rows = []
             day_start = 3  # 勤務希望シートは 列C(3) から日付
             for r in range(4, ws_rq.max_row + 1):  # row 4 からデータ
-                # 名前は数式参照で入っている → data_only=True なので値が読める
+                # 名前列は数式（=スタッフ情報!A4）→ data_only=Trueで未計算だとNone
+                # → スタッフ情報シートから取得済みの名前を行番号で対応させる
+                row_idx = r - 4  # 0-based index
                 name_val = ws_rq.cell(row=r, column=1).value
+                # 数式未計算の場合、スタッフ情報の名前リストからfallback
+                if (not name_val or not str(name_val).strip()) and row_idx < len(staff_names):
+                    name_val = staff_names[row_idx]
                 if not name_val or not str(name_val).strip():
                     continue
                 r_vals = [str(name_val).strip()]
