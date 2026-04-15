@@ -596,8 +596,10 @@ def _generate_youshiki9_excel(schedule, names, tiers, r_dedicated, r_weekly,
 # ============================================================
 # Excelテンプレート生成
 # ============================================================
-def _generate_template_excel(year, month, num_staff=20):
-    """入力用Excelテンプレートを生成"""
+def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
+    """入力用Excelテンプレートを生成
+    hidden_staff_cols: 非表示にするスタッフ情報カラム名のリスト
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -715,12 +717,12 @@ def _generate_template_excel(year, month, num_staff=20):
         if d in holidays:
             cell.fill = PatternFill("solid", fgColor="F4CCCC")
             cell.font = Font(bold=True, color="CC0000", size=9)
-        elif wd_idx >= 5:
+        elif wd_idx >= 5:  # 土日
+            cell.fill = PatternFill("solid", fgColor="4472C4")
+            cell.font = Font(bold=True, color="FFFFFF", size=9)
+        else:  # 平日
             cell.fill = PatternFill("solid", fgColor="BDD7EE")
             cell.font = Font(bold=True, color="1F4E79", size=9)
-        else:
-            cell.fill = PatternFill("solid", fgColor="4472C4")
-            cell.font = req_hdr_font
 
     # --- 列幅 ---
     ws_c.column_dimensions["A"].width = 14
@@ -735,6 +737,12 @@ def _generate_template_excel(year, month, num_staff=20):
         ["佐藤花子", "AB", "", "", "", "", "", "", "", "", ""],
         ["鈴木一郎", "C", "", "", "3", "", "", "", "", "月水金", ""],
     ]
+    # ゼブラストライプ用の交互色
+    staff_fill_even = PatternFill("solid", fgColor="E2EFDA")  # 薄緑（偶数行）
+    staff_fill_odd  = PatternFill("solid", fgColor="F0F7EB")  # より薄い緑（奇数行）
+    req_fill_even   = PatternFill("solid", fgColor="D6E4F0")  # 薄青（偶数行）
+    req_fill_odd    = PatternFill("solid", fgColor="E8F0F8")  # より薄い青（奇数行）
+
     total_rows = max(num_staff, len(samples))
     for i in range(total_rows):
         r = 5 + i
@@ -742,16 +750,20 @@ def _generate_template_excel(year, month, num_staff=20):
             row_data = samples[i]
         else:
             row_data = [f"スタッフ{i + 1}"] + [""] * (n_staff_cols - 1)
-        # スタッフ情報セル（薄緑背景）
+        # ゼブラストライプ: 偶数/奇数で色分け
+        _s_fill = staff_fill_even if i % 2 == 0 else staff_fill_odd
+        _r_fill = req_fill_even if i % 2 == 0 else req_fill_odd
+        # スタッフ情報セル
         for c, val in enumerate(row_data, 1):
             cell = ws_c.cell(row=r, column=c, value=val if val != "" else None)
             cell.border = bdr
-            cell.fill = staff_cell_fill
-        # 勤務希望セル（薄青背景・空欄）
+            cell.fill = _s_fill
+        # 勤務希望セル（空欄 — value設定しない = None）
         for d in range(1, num_days + 1):
             cell = ws_c.cell(row=r, column=day_start_col + d - 1)
+            cell.value = None
             cell.border = bdr
-            cell.fill = req_cell_fill
+            cell.fill = _r_fill
 
     # --- 凡例エリア（データの下に余白を空けて配置） ---
     legend_start_row = 5 + total_rows + 2
@@ -800,6 +812,14 @@ def _generate_template_excel(year, month, num_staff=20):
 
     # ウィンドウ枠の固定（ヘッダー + 名前列）
     ws_c.freeze_panes = "B5"
+
+    # --- 非表示カラムの列を折りたたむ ---
+    if hidden_staff_cols:
+        for h_col_name in hidden_staff_cols:
+            if h_col_name in staff_headers:
+                col_idx = staff_headers.index(h_col_name) + 1  # 1-based
+                col_letter = get_column_letter(col_idx)
+                ws_c.column_dimensions[col_letter].hidden = True
 
     buf = BytesIO()
     wb.save(buf)
@@ -1056,7 +1076,15 @@ with tab0:
         tmpl_staff_count = st.number_input(
             "テンプレートのスタッフ人数", min_value=1, max_value=100,
             value=15, step=1, key="tmpl_staff_count")
-        template_bytes = _generate_template_excel(year, month, num_staff=tmpl_staff_count)
+        _tmpl_all_cols = ["Tier", "夜勤専従", "時短", "週勤務", "前月末",
+                          "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可"]
+        with st.expander("⚙ テンプレートに表示するスタッフ情報カラム", expanded=False):
+            _tmpl_visible = st.multiselect(
+                "表示カラム", _tmpl_all_cols, default=_tmpl_all_cols,
+                key="tmpl_col_toggle")
+        _tmpl_hidden = [c for c in _tmpl_all_cols if c not in _tmpl_visible]
+        template_bytes = _generate_template_excel(year, month, num_staff=tmpl_staff_count,
+                                                  hidden_staff_cols=_tmpl_hidden if _tmpl_hidden else None)
         st.download_button(
             label=f"📄 Excelテンプレート（{year}年{month}月・{tmpl_staff_count}人）",
             data=template_bytes,
@@ -1396,13 +1424,36 @@ with tab1:
     )
 
     # --- 編集結果を元のDFに書き戻す ---
-    # スタッフ情報
-    _staff_out_cols = [c for c in (["名前"] + _staff_cols) if c in edited_combined.columns]
-    edited_staff = edited_combined[_staff_out_cols].copy()
-    # 勤務希望モードで名前しか表示していない場合は元のstaff_dfを保持
+    # スタッフ情報: 常に全カラムを保持し、表示中のカラムのみ上書き
+    _full_staff = st.session_state.staff_df.copy()
     if view_mode == "📝 勤務希望":
-        # staff_dfの名前だけ更新し、属性はそのまま
-        edited_staff = st.session_state.staff_df.copy()
+        # 勤務希望モードではスタッフ属性は一切変更しない
+        edited_staff = _full_staff
+    else:
+        # 表示中のカラムだけ edited_combined から取得し、非表示カラムは元の値を保持
+        _visible_cols_in_edit = [c for c in _visible_staff_cols if c in edited_combined.columns]
+        # 行数が変わった場合（行追加・削除）に対応: edited_combined の名前ベースでマージ
+        edited_staff = _full_staff.copy()
+        # edited_combined の行数に合わせてリサイズ
+        _edit_names = edited_combined["名前"].tolist() if "名前" in edited_combined.columns else []
+        _new_rows = []
+        for idx in range(len(edited_combined)):
+            row = {}
+            row["名前"] = edited_combined.iloc[idx]["名前"] if "名前" in edited_combined.columns else ""
+            # 表示中カラムは編集値を使用
+            for c in _visible_cols_in_edit:
+                row[c] = edited_combined.iloc[idx][c]
+            # 非表示カラムは既存staff_dfの同名行から取得（なければデフォルト）
+            _name = row.get("名前", "")
+            _match = _full_staff[_full_staff["名前"] == _name] if _name and str(_name).strip() else pd.DataFrame()
+            for c in _all_staff_detail_cols:
+                if c not in _visible_cols_in_edit:
+                    if len(_match) > 0:
+                        row[c] = _match.iloc[0][c] if c in _match.columns else None
+                    else:
+                        row[c] = None
+            _new_rows.append(row)
+        edited_staff = pd.DataFrame(_new_rows, columns=["名前"] + _all_staff_detail_cols)
     st.session_state.staff_df = edited_staff
 
     # 勤務希望
@@ -1427,9 +1478,9 @@ with tab3:
     col_a, col_b, col_c = st.columns(3)
     valid_staff = edited_staff.dropna(subset=["名前"])
     valid_staff = valid_staff[valid_staff["名前"].str.strip() != ""]
-    ft_count = len(valid_staff[valid_staff["週勤務"].isna()])
-    pt_count = len(valid_staff[valid_staff["週勤務"].notna()])
-    ded_count = len(valid_staff[valid_staff["夜勤専従"] == True])
+    ft_count = len(valid_staff[valid_staff["週勤務"].isna()]) if "週勤務" in valid_staff.columns else len(valid_staff)
+    pt_count = len(valid_staff[valid_staff["週勤務"].notna()]) if "週勤務" in valid_staff.columns else 0
+    ded_count = len(valid_staff[valid_staff["夜勤専従"] == True]) if "夜勤専従" in valid_staff.columns else 0
 
     col_a.metric("スタッフ数", f"{len(valid_staff)}人")
     col_b.metric("フルタイム / パート", f"{ft_count} / {pt_count}")
