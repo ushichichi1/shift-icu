@@ -738,7 +738,8 @@ def _write_gsheet_one(sh, result):
 # ============================================================
 
 def build_and_solve(staff_list, requests, settings, num_patterns=1,
-                    night_hours=16, night_72h_mode="none", op_rules=None):
+                    night_hours=16, night_72h_mode="none", op_rules=None,
+                    enabled_shifts=None):
     """勤務表を num_patterns パターン生成して返す (list of result dict)"""
     year     = settings.get("year") or 2026
     month    = settings.get("month") or 5
@@ -827,6 +828,15 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
 
     # --- 変数削減: スタッフ属性に応じて不要なシフト変数を除外 ---
     _excluded = set()  # (s, t) の組: このスタッフにこのシフトは不要
+
+    # --- 施設で使用しないシフト種別を全スタッフから除外 ---
+    if enabled_shifts is not None:
+        _sym_to_shift = {"準": SN, "早": E, "遅": L, "長": LD, "短": ST}
+        for sym, shift_type in _sym_to_shift.items():
+            if sym not in enabled_shifts:
+                for s in names:
+                    _excluded.add((s, shift_type))
+
     for s in names:
         if dedicated.get(s):
             # 専従: 日勤系(R/E/L/ST/LD)は不要（Dは希望日のみ後で個別処理）

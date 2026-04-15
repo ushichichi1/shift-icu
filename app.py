@@ -670,6 +670,44 @@ def _generate_template_excel(year, month, num_staff=20):
         ws_s.cell(row=r, column=3, value=desc).border = bdr
         ws_s.cell(row=r, column=3).font = Font(color="888888", size=9)
 
+    # === 勤務種別設定セクション ===
+    shift_type_start = comp_start + 3 + len(comp_items) + 2
+    ws_s.cell(row=shift_type_start, column=1, value="勤務種別設定").font = Font(
+        bold=True, size=12, color="1F4E79")
+    ws_s.cell(row=shift_type_start + 1, column=1,
+              value="※「使用」列に○を入れると、その勤務種別がスケジュールに使用されます").font = Font(
+        color="888888", size=9)
+    ws_s.column_dimensions["D"].width = 12
+    for c, txt in enumerate(["記号", "名称", "時間帯", "使用"], 1):
+        cell = ws_s.cell(row=shift_type_start + 2, column=c, value=txt)
+        cell.fill = PatternFill("solid", fgColor="1F4E79")
+        cell.font = Font(bold=True, color="FFFFFF", size=11)
+        cell.border = bdr
+        cell.alignment = Alignment(horizontal="center")
+    _shift_type_rows = [
+        ("日", "日勤", "8:00〜17:00", "○"),
+        ("夜", "夜勤", "16:45〜翌9:00 (16h)", "○"),
+        ("準", "短夜勤", "17:00〜翌5:00 (12h)", ""),
+        ("早", "早出", "7:00〜16:00", ""),
+        ("遅", "遅出", "12:00〜21:00", ""),
+        ("長", "長日勤", "8:45〜21:00 (12h)", ""),
+        ("短", "時短", "8:45〜16:00 (6.25h)", ""),
+        ("休", "公休", "—", "○"),
+        ("研", "研修", "—", "○"),
+        ("夜不", "夜勤不可(希望専用)", "—", "○"),
+        ("休暇", "有給休暇(希望専用)", "—", "○"),
+        ("明休", "明け+翌日休(希望専用)", "—", "○"),
+    ]
+    for i, (sym, name, hours, use) in enumerate(_shift_type_rows):
+        r = shift_type_start + 3 + i
+        ws_s.cell(row=r, column=1, value=sym).border = bdr
+        ws_s.cell(row=r, column=1).font = Font(bold=True)
+        ws_s.cell(row=r, column=2, value=name).border = bdr
+        ws_s.cell(row=r, column=3, value=hours).border = bdr
+        ws_s.cell(row=r, column=3).font = Font(color="888888", size=9)
+        ws_s.cell(row=r, column=4, value=use).border = bdr
+        ws_s.cell(row=r, column=4).alignment = Alignment(horizontal="center")
+
     # === 共通データ ===
     staff_headers = ["名前", "Tier", "夜勤専従", "時短", "週勤務", "前月末",
                      "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可"]
@@ -877,6 +915,25 @@ def _parse_uploaded_excel(uploaded_file, year, month):
             row_vals = [ws.cell(row=r, column=c).value or "" for c in range(1, 4)]
             rows.append(row_vals)
         gs_settings = _parse_settings(rows)
+
+        # --- 勤務種別設定セクションの読み取り ---
+        _all_shift_syms = {"日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"}
+        _found_shift_section = False
+        _enabled = []
+        for r in range(4 + len(SETTINGS_KEYS), ws.max_row + 1):
+            sym_val = ws.cell(row=r, column=1).value
+            if sym_val is not None:
+                sym_str = str(sym_val).strip()
+                if sym_str in _all_shift_syms:
+                    _found_shift_section = True
+                    use_val = ws.cell(row=r, column=4).value
+                    if use_val and str(use_val).strip() == "○":
+                        _enabled.append(sym_str)
+        if _found_shift_section:
+            gs_settings["enabled_shifts"] = _enabled
+        else:
+            # 旧テンプレート: 全種別有効
+            gs_settings["enabled_shifts"] = list(_all_shift_syms)
 
     # --- テンプレ形式の自動検出（3種対応） ---
     # 1. 新形式: 「スタッフ情報」+「勤務希望」（2シート分離、数式参照）
@@ -1087,6 +1144,19 @@ op_rules = {
 }
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("🔄 使用シフト種別")
+_all_shift_symbols = ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]
+_default_enabled = st.session_state.get("enabled_shifts", _all_shift_symbols)
+enabled_shifts = st.sidebar.multiselect(
+    "有効なシフト種別",
+    options=_all_shift_symbols,
+    default=[s for s in _default_enabled if s in _all_shift_symbols],
+    key="inp_enabled_shifts",
+    help="使用するシフト種別を選択してください。選択されていない種別はスケジュールに含まれません。"
+)
+st.session_state.enabled_shifts = enabled_shifts
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("🏥 人員配置基準")
 unit_type = st.sidebar.selectbox(
     "ユニット種別",
@@ -1250,6 +1320,9 @@ with tab0:
                                 uploaded, year, month)
                         if gs_settings:
                             _apply_settings(gs_settings)
+                        st.session_state.enabled_shifts = gs_settings.get(
+                            "enabled_shifts",
+                            ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"])
                         st.session_state.staff_df = _staff_to_df(staff_list)
                         st.session_state.requests_df = _reqs_to_df(reqs, staff_list, num_days)
                         st.session_state.data_loaded = True
@@ -1475,7 +1548,10 @@ with tab1:
                 col_config[c] = _col_config_defs[c]
     # 勤務希望カラム
     if view_mode != "👤 スタッフ情報":
-        shift_options = ["", "日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]
+        _enabled_set = set(st.session_state.get("enabled_shifts",
+                            ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]))
+        shift_options = [""] + [s for s in ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]
+                                if s in _enabled_set]
         for d in range(1, num_days + 1):
             col_config[str(d)] = st.column_config.SelectboxColumn(
                 header_map[str(d)], options=shift_options, width="small")
@@ -1619,7 +1695,8 @@ with tab3:
                                               num_patterns=num_patterns,
                                               night_hours=night_hours,
                                               night_72h_mode=night_72h_mode,
-                                              op_rules=op_rules)
+                                              op_rules=op_rules,
+                                              enabled_shifts=st.session_state.get("enabled_shifts"))
 
             console_output = console.getvalue()
 
