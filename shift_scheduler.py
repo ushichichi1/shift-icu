@@ -158,7 +158,8 @@ SETTINGS_KEYS = [
 class Staff:
     def __init__(self, name, tier, dedicated=False, weekly_days=None, prev_month="",
                  night_min=None, night_max=None, consec_max=None,
-                 work_days=None, no_holiday=False, short_time=False):
+                 work_days=None, no_holiday=False, short_time=False,
+                 no_weekend=False):
         self.name = name
         self.tier = tier
         self.dedicated = dedicated
@@ -170,6 +171,7 @@ class Staff:
         self.work_days = work_days      # None=全曜日, set of ints (0=月..6=日)
         self.no_holiday = no_holiday    # True=祝日勤務不可
         self.short_time = short_time    # True=時短勤務（育児・介護）→日勤をSTに置換
+        self.no_weekend = no_weekend    # True=土日勤務不可
     @property
     def is_parttime(self):
         return self.weekly_days is not None
@@ -184,7 +186,7 @@ def create_template():
     # --- スタッフ一覧 ---
     ws1 = wb.active
     ws1.title = "スタッフ一覧"
-    headers = ["名前", "Tier", "夜勤専従", "週勤務", "前月末", "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可"]
+    headers = ["名前", "Tier", "夜勤専従", "週勤務", "前月末", "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可", "土日不可"]
     for i, h in enumerate(headers, 1):
         c = ws1.cell(row=1, column=i, value=h)
         c.font = FONT_H; c.fill = FH; c.border = BDR; c.alignment = CTR
@@ -340,8 +342,11 @@ def _parse_staff_list(rows):
         # 祝日不可
         no_hol_str = str(row[col_offset+6]).strip() if len(row) > col_offset+6 else ""
         no_hol = no_hol_str in ("○", "◯", "TRUE", "True", "1")
+        # 土日不可
+        no_we_str = str(row[col_offset+7]).strip() if len(row) > col_offset+7 else ""
+        no_we = no_we_str in ("○", "◯", "TRUE", "True", "1")
         staff.append(Staff(name, tier, ded, weekly, prev, n_min, n_max, c_max,
-                           work_days, no_hol, short_t))
+                           work_days, no_hol, short_t, no_we))
     if not staff:
         print("✗ スタッフが0人です")
         sys.exit(1)
@@ -534,9 +539,9 @@ def create_gsheet_template():
     ws1 = sh.sheet1
     ws1.update_title("スタッフ一覧")
     ws1.update("A1", [["名前", "Tier", "夜勤専従", "週勤務", "前月末",
-                        "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可",
+                        "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可", "土日不可",
                         "", "列の説明"]])
-    rows = [[n, t, d, w, p, "", "", "", "", "", ""] for n, t, d, w, p in SAMPLE_STAFF]
+    rows = [[n, t, d, w, p, "", "", "", "", "", "", ""] for n, t, d, w, p in SAMPLE_STAFF]
     descs = [
         "Tier: A=リーダー AB=サブリーダー B=メンバー1 C=メンバー2",
         "夜勤専従: ○=専従", "週勤務: 空欄=フルタイム 数字=週N日(日勤限定)",
@@ -545,6 +550,7 @@ def create_gsheet_template():
         "連勤Max: 空欄=設定値 数字=個別の連続勤務上限",
         "勤務曜日: 空欄=全曜日 例:月火木",
         "祝日不可: ○=祝日は勤務しない",
+        "土日不可: ○=土日は勤務しない",
         f"希望は「勤務希望」シートに(最大{MAX_REQUEST_DAYS}日)",
     ]
     for i, r in enumerate(rows):
@@ -779,6 +785,7 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     consec_max_ind = {s.name: s.consec_max for s in staff_list}
     work_days_map = {s.name: s.work_days for s in staff_list}
     no_holiday_map = {s.name: s.no_holiday for s in staff_list}
+    no_weekend_map = {s.name: s.no_weekend for s in staff_list}
     short_time_map = {s.name: s.short_time for s in staff_list}
 
     fulltime  = [n for n in names if weekly[n] is None]
@@ -1108,9 +1115,10 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         target = round(weekly[s] * num_days / 7)
         # 休暇日数を差し引く
         vac_count = len(vacation_days.get(s, set()))
-        # 勤務可能日数を考慮（曜日制限・祝日不可・休暇で減る）
+        # 勤務可能日数を考慮（曜日制限・祝日不可・土日不可・休暇で減る）
         wd_set = work_days_map.get(s)
         no_hol = no_holiday_map.get(s, False)
+        no_we = no_weekend_map.get(s, False)
         avail_days = 0
         for d in days:
             # 休暇日は勤務不可
@@ -1123,6 +1131,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
                 blocked = True
             if no_hol and is_hol:
                 blocked = True
+            if no_we and day_wd >= 5:  # 土(5)日(6)
+                blocked = True
             if not blocked:
                 avail_days += 1
         actual_target = min(target, avail_days)
@@ -1130,17 +1140,18 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             reason = []
             if vac_count > 0:
                 reason.append(f"休暇{vac_count}日")
-            if wd_set is not None or no_hol:
-                reason.append("曜日/祝日制限")
+            if wd_set is not None or no_hol or no_we:
+                reason.append("曜日/祝日/土日制限")
             reason_str = "・".join(reason) if reason else "制限"
             print(f"  ⚠ {s}: 勤務可能{avail_days}日 < 週{weekly[s]}目標{target}日 → {actual_target}日に調整 ({reason_str})")
         prob += pulp.lpSum(x[s, d, D] for d in days) >= max(actual_target - 1, 0)
         prob += pulp.lpSum(x[s, d, D] for d in days) <= actual_target + 1
-    # 勤務曜日制限 + 祝日不可
+    # 勤務曜日制限 + 祝日不可 + 土日不可
     for s in names:
         wd_set = work_days_map.get(s)
         no_hol = no_holiday_map.get(s, False)
-        if wd_set is not None or no_hol:
+        no_we = no_weekend_map.get(s, False)
+        if wd_set is not None or no_hol or no_we:
             for d in days:
                 day_wd = (fwd + d) % 7  # 0=月..6=日
                 is_hol = (d + 1) in holidays
@@ -1149,6 +1160,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
                     blocked = True  # 勤務曜日外
                 if no_hol and is_hol:
                     blocked = True  # 祝日不可
+                if no_we and day_wd >= 5:
+                    blocked = True  # 土日不可
                 if blocked:
                     # 勤務不可 → 休のみ
                     prob += x[s, d, O] == 1
