@@ -978,16 +978,18 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             if shift_type == "休暇" and 1 <= day_num <= num_days:
                 vacation_days.setdefault(s, set()).add(day_num - 1)
 
-    # 日勤最低人数（ソフト制約: 不足時はペナルティ）
+    # 日勤最低人数（ソフト制約: 不足時はペナルティ + ハード下限）
     # 早出・遅出・時短・長日勤も日勤系としてカウント
     day_short = {}
+    # ハード下限: min_day - 1 （目標-1人まではハード制約で保証）
+    _hard_min_day = max(2, min_day - 1)
     for d in days:
         day_sum = pulp.lpSum(x[s, d, t] for s in names for t in DAY_SHIFTS)
         ds = pulp.LpVariable(f"day_short_{d}", lowBound=0)
         prob += ds >= min_day - day_sum
         day_short[d] = ds
-        # 最低保証: 少なくとも2人は必要（ハード）
-        prob += day_sum >= 2
+        # ハード下限
+        prob += day_sum >= _hard_min_day
     # 夜勤人数: 夜勤(N) + 短夜勤(SN) の合計
     for d in days:
         prob += pulp.lpSum(x[s, d, t] for s in names for t in NIGHT_SHIFTS) == night_count
@@ -1326,8 +1328,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     # 目的関数
     # 夜勤均等 (n_max - n_min) を最重要ソフト制約に
     obj = (
-        100 * pulp.lpSum(req_miss[k] for k in req_miss)   # 希望未達（最優先）
-        + 70 * pulp.lpSum(day_short[d] for d in days)      # 日勤最低人数不足
+        200 * pulp.lpSum(day_short[d] for d in days)      # 日勤最低人数不足（最優先）
+        + 100 * pulp.lpSum(req_miss[k] for k in req_miss)   # 希望未達
         + 60 * (n_max_var - n_min_var)                     # 夜勤均等
         + 50 * pulp.lpSum(a_miss[d] for d in days)         # Aリーダー欠
         + 35 * pulp.lpSum(night_72h_over[s] for s in night_72h_over)  # 72h超過（softモード）
