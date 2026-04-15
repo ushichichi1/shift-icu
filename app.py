@@ -25,7 +25,7 @@ from shift_scheduler import (
 # ページ設定
 # ============================================================
 st.set_page_config(
-    page_title="勤務表作成ツール",
+    page_title="ICU勤務表作成ツール",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -687,11 +687,11 @@ def _generate_template_excel(year, month, num_staff=20):
     _shift_type_rows = [
         ("日", "日勤", "8:00〜17:00", "○"),
         ("夜", "夜勤", "16:45〜翌9:00 (16h)", "○"),
-        ("準", "短夜勤", "17:00〜翌5:00 (12h)", ""),
-        ("早", "早出", "7:00〜16:00", ""),
-        ("遅", "遅出", "12:00〜21:00", ""),
-        ("長", "長日勤", "8:45〜21:00 (12h)", ""),
-        ("短", "時短", "8:45〜16:00 (6.25h)", ""),
+        ("準", "短夜勤", "17:00〜翌5:00 (12h)", ""),   # ICU二交代では不使用
+        ("早", "早出", "7:00〜16:00", ""),               # ICU二交代では不使用
+        ("遅", "遅出", "12:00〜21:00", ""),              # ICU二交代では不使用
+        ("長", "長日勤", "8:45〜21:00 (12h)", ""),       # ICU二交代では不使用
+        ("短", "時短", "8:45〜16:00 (6.25h)", "○"),     # 時短スタッフ用
         ("休", "公休", "—", "○"),
         ("研", "研修", "—", "○"),
         ("夜不", "夜勤不可(希望専用)", "—", "○"),
@@ -1095,9 +1095,10 @@ num_patterns = st.sidebar.number_input("生成パターン数", 1, 5, 3, key="in
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖ コンプライアンス設定")
-shift_system = st.sidebar.radio("交代制", ["二交代（16h夜勤）", "三交代（8h夜勤）"],
-                                 horizontal=False, key="inp_shift_system")
-night_hours = 16 if shift_system.startswith("二") else 8
+# ICU機能制限版: 二交代固定
+shift_system = "二交代（16h夜勤）"
+st.sidebar.info("🏥 二交代制（16h夜勤）固定")
+night_hours = 16
 
 _72h_limit = 72 // night_hours
 night_72h_mode_label = st.sidebar.radio(
@@ -1119,54 +1120,35 @@ elif night_72h_mode == "soft":
 else:
     st.sidebar.caption(f"✅ 制約なし（結果画面でのみ警告表示）")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📋 運用条件ルール")
-
-_rule_options = ["🚫 必ず準拠", "⚠ なるべく準拠", "✅ 許容"]
-_rule_map = {"🚫 必ず準拠": "strict", "⚠ なるべく準拠": "soft", "✅ 許容": "none"}
-
-ld_sn_label = st.sidebar.radio(
-    "長日勤→翌日短夜勤",
-    _rule_options, index=0,
-    key="inp_ld_sn",
-    help="長日勤(12h)の翌日に短夜勤(12h)を入れるか"
-)
-ld_consec_label = st.sidebar.radio(
-    "長日勤の連続禁止",
-    _rule_options, index=1,
-    key="inp_ld_consec",
-    help="長日勤(12h)を2日連続で割り当てるか"
-)
-
+# ICU機能制限版: LD/SN不使用のため運用ルールは固定
 op_rules = {
-    "ld_sn": _rule_map[ld_sn_label],
-    "ld_consecutive": _rule_map[ld_consec_label],
+    "ld_sn": "strict",         # LD/SN自体が無効なので影響なし
+    "ld_consecutive": "strict",
 }
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 使用シフト種別")
+# ICU二交代制デフォルト: 日/夜/短(時短)/休/研 + 希望専用(夜不/休暇/明休)
 _all_shift_symbols = ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"]
-_default_enabled = st.session_state.get("enabled_shifts", _all_shift_symbols)
+_icu_default = ["日", "夜", "短", "休", "研", "夜不", "休暇", "明休"]
+_default_enabled = st.session_state.get("enabled_shifts", _icu_default)
 enabled_shifts = st.sidebar.multiselect(
     "有効なシフト種別",
     options=_all_shift_symbols,
     default=[s for s in _default_enabled if s in _all_shift_symbols],
     key="inp_enabled_shifts",
-    help="使用するシフト種別を選択してください。選択されていない種別はスケジュールに含まれません。"
+    help="ICU二交代制: 日勤・夜勤が基本。時短は時短スタッフ用。"
 )
 st.session_state.enabled_shifts = enabled_shifts
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏥 人員配置基準")
-unit_type = st.sidebar.selectbox(
-    "ユニット種別",
-    list(UNIT_STANDARDS.keys()),
-    index=0,  # デフォルト: ICU
-    key="inp_unit_type",
-)
+# ICU機能制限版: ICU固定
+unit_type = "ICU（特定集中治療室管理料 1〜4）"
+st.sidebar.info(f"🏥 {unit_type}")
 _ratio_val, _check_night, _ratio_label, _basis_label = UNIT_STANDARDS[unit_type]
 bed_count = st.sidebar.number_input(
-    "病床数（床）", min_value=1, max_value=200, value=10,
+    "病床数（床）", min_value=1, max_value=200, value=4,
     key="inp_bed_count"
 )
 _required_nurses = max(1, -(-bed_count // _ratio_val))
@@ -1191,7 +1173,7 @@ settings = {
 # ============================================================
 # メインエリア
 # ============================================================
-st.title("🏥 勤務表自動作成ツール")
+st.title("🏥 ICU勤務表自動作成ツール（二交代制）")
 
 tab0, tab1, tab3, tab4, tab5 = st.tabs(
     ["📂 データ入力", "📋 スタッフ・勤務希望", "⚡ 生成", "📊 結果", "🏠 ダッシュボード"])
@@ -1322,7 +1304,7 @@ with tab0:
                             _apply_settings(gs_settings)
                         st.session_state.enabled_shifts = gs_settings.get(
                             "enabled_shifts",
-                            ["日", "夜", "準", "早", "遅", "長", "短", "休", "研", "夜不", "休暇", "明休"])
+                            ["日", "夜", "短", "休", "研", "夜不", "休暇", "明休"])
                         st.session_state.staff_df = _staff_to_df(staff_list)
                         st.session_state.requests_df = _reqs_to_df(reqs, staff_list, num_days)
                         st.session_state.data_loaded = True
@@ -1862,12 +1844,14 @@ with tab4:
             counts = {t: schedule[s].count(t) for t in SHIFTS}
             row["日"] = counts[D]
             row["夜"] = counts[N]
-            row["準"] = counts[SN]
             row["明"] = counts[A]
-            row["早"] = counts[E]
-            row["遅"] = counts[L]
-            row["長"] = counts[LD]
-            row["短"] = counts[ST]
+            # 有効なシフトのみ集計列を追加
+            _en = set(st.session_state.get("enabled_shifts", []))
+            if "準" in _en: row["準"] = counts[SN]
+            if "早" in _en: row["早"] = counts[E]
+            if "遅" in _en: row["遅"] = counts[L]
+            if "長" in _en: row["長"] = counts[LD]
+            if "短" in _en: row["短"] = counts[ST]
             row["休"] = counts[O]
             row["研"] = counts[R]
             row["暇"] = counts[V]
@@ -1892,7 +1876,9 @@ with tab4:
             st.dataframe(styled, use_container_width=True, height=600, hide_index=True)
         else:
             st.caption("⚠ セルを直接編集できます。変更後「変更を保存」を押してください。")
-            shift_options_edit = [D, N, SN, A, E, L, LD, ST, O, R, V]
+            _en = set(st.session_state.get("enabled_shifts", []))
+            _sym_map = {"準": SN, "早": E, "遅": L, "長": LD, "短": ST}
+            shift_options_edit = [D, N, A, O, R, V] + [v for k, v in _sym_map.items() if k in _en]
             col_cfg_edit = {
                 "名前": st.column_config.TextColumn("名前", disabled=True, width="small"),
                 "Tier": st.column_config.TextColumn("Tier", disabled=True, width="small"),
@@ -1900,8 +1886,16 @@ with tab4:
             for dc in day_cols:
                 col_cfg_edit[dc] = st.column_config.SelectboxColumn(
                     dc, options=shift_options_edit, width="small")
-            for col in ["日", "夜", "準", "明", "早", "遅", "長", "短", "休", "研", "暇", "公休"]:
-                col_cfg_edit[col] = st.column_config.NumberColumn(col, disabled=True, width="small")
+            _summary_cols = ["日", "夜", "明"]
+            if "準" in _en: _summary_cols.append("準")
+            if "早" in _en: _summary_cols.append("早")
+            if "遅" in _en: _summary_cols.append("遅")
+            if "長" in _en: _summary_cols.append("長")
+            if "短" in _en: _summary_cols.append("短")
+            _summary_cols += ["休", "研", "暇", "公休"]
+            for col in _summary_cols:
+                if col in df.columns:
+                    col_cfg_edit[col] = st.column_config.NumberColumn(col, disabled=True, width="small")
 
             edited_df = st.data_editor(
                 df, column_config=col_cfg_edit,
@@ -1920,23 +1914,27 @@ with tab4:
 
         # ── 夜勤回数分布チャート ─────────────────────────────
         with st.expander("📊 スタッフ別 夜勤・勤務統計", expanded=False):
+            _en = set(st.session_state.get("enabled_shifts", []))
             stat_rows = []
             for s in names:
                 sh = schedule[s]
                 n_cnt = sh.count(N)
                 sn_cnt = sh.count(SN)
                 total_h = n_cnt * night_hours + sn_cnt * 12
-                stat_rows.append({
+                _row = {
                     "名前": s, "Tier": tiers[s],
-                    "夜勤(N)": n_cnt,
-                    "短夜勤(準)": sn_cnt,
+                    "夜勤": n_cnt,
                     "月夜勤時間": f"{total_h}h",
                     "72h": "🚨" if total_h > 72 else ("⚠" if total_h >= 64 else "✅"),
-                    "早出": sh.count(E), "遅出": sh.count(L),
-                    "長日勤": sh.count(LD), "時短": sh.count(ST),
                     "日勤": sh.count(D),
                     "休み": sh.count(O) + sh.count(V),
-                })
+                }
+                if "準" in _en: _row["短夜勤"] = sn_cnt
+                if "早" in _en: _row["早出"] = sh.count(E)
+                if "遅" in _en: _row["遅出"] = sh.count(L)
+                if "長" in _en: _row["長日勤"] = sh.count(LD)
+                if "短" in _en: _row["時短"] = sh.count(ST)
+                stat_rows.append(_row)
             stat_df = pd.DataFrame(stat_rows)
             st.dataframe(stat_df, use_container_width=True, hide_index=True)
 
@@ -2071,12 +2069,17 @@ with tab4:
                 st.success(f"全{r_num_days}日、{scope_label} {req_nurses}人以上を確保しています。")
 
         with st.expander("📈 日別集計", expanded=False):
+            _en = set(st.session_state.get("enabled_shifts", []))
             summary_data = {"日付": [f"{d+1}" for d in range(r_num_days)]}
-            for label, shift in [
-                ("日勤", D), ("夜勤", N), ("短夜勤", SN), ("明け", A),
-                ("早出", E), ("遅出", L), ("長日勤", LD), ("時短", ST),
-                ("休み", O), ("研修", R),
-            ]:
+            _day_summary_items = [("日勤", D), ("夜勤", N)]
+            if "準" in _en: _day_summary_items.append(("短夜勤", SN))
+            _day_summary_items.append(("明け", A))
+            if "早" in _en: _day_summary_items.append(("早出", E))
+            if "遅" in _en: _day_summary_items.append(("遅出", L))
+            if "長" in _en: _day_summary_items.append(("長日勤", LD))
+            if "短" in _en: _day_summary_items.append(("時短", ST))
+            _day_summary_items += [("休み", O), ("研修", R)]
+            for label, shift in _day_summary_items:
                 summary_data[label] = [sum(1 for s in names if schedule[s][d] == shift)
                                         for d in range(r_num_days)]
             # 日勤系合計列を追加
