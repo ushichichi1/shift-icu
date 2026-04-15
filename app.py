@@ -596,10 +596,8 @@ def _generate_youshiki9_excel(schedule, names, tiers, r_dedicated, r_weekly,
 # ============================================================
 # Excelテンプレート生成
 # ============================================================
-def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
-    """入力用Excelテンプレートを生成
-    hidden_staff_cols: 非表示にするスタッフ情報カラム名のリスト
-    """
+def _generate_template_excel(year, month, num_staff=20):
+    """入力用Excelテンプレートを生成（スタッフ情報 + 勤務希望の2シート構成）"""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -672,43 +670,116 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
         ws_s.cell(row=r, column=3, value=desc).border = bdr
         ws_s.cell(row=r, column=3).font = Font(color="888888", size=9)
 
-    # --- Sheet 2: スタッフ・勤務希望（統合シート） ---
-    ws_c = wb.create_sheet("スタッフ・勤務希望")
-    ws_c.cell(row=1, column=1, value=f"スタッフ・勤務希望 — {year}年{month}月").font = Font(bold=True, size=14)
-    ws_c.cell(row=2, column=1, value="緑エリア: スタッフ情報 ／ 青エリア: 勤務希望（日/夜/準/早/遅/長/短/休/研/夜不/休暇/明休）").font = Font(color="888888", size=9)
-
-    # --- ヘッダー構築 ---
+    # === 共通データ ===
     staff_headers = ["名前", "Tier", "夜勤専従", "時短", "週勤務", "前月末",
                      "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可"]
     n_staff_cols = len(staff_headers)
-
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     first_wd = date(year, month, 1).weekday()
     holidays = {d.day for d, _ in jpholiday.month_holidays(year, month)}
 
-    # スタッフ情報ヘッダー (row 4) — 緑系
+    samples_name = ["山田太郎", "佐藤花子", "鈴木一郎"]
+    samples_tier = ["A", "AB", "C"]
+    samples_extra = [
+        [None, None, None, None, None, None, None, None, None],
+        [None, None, None, None, None, None, None, None, None],
+        [None, None, "3", None, None, None, None, "月水金", None],
+    ]
+    total_rows = max(num_staff, len(samples_name))
+
+    # ゼブラストライプ用の交互色
+    staff_fill_even = PatternFill("solid", fgColor="E2EFDA")
+    staff_fill_odd  = PatternFill("solid", fgColor="F5FAF0")
+    req_fill_even   = PatternFill("solid", fgColor="D6E4F0")
+    req_fill_odd    = PatternFill("solid", fgColor="EFF5FB")
+
+    # ================================================================
+    # Sheet 2: スタッフ情報（原本）
+    # ================================================================
+    ws_staff = wb.create_sheet("スタッフ情報")
+    ws_staff.cell(row=1, column=1, value=f"👤 スタッフ情報 — {year}年{month}月").font = Font(bold=True, size=14)
+    ws_staff.cell(row=2, column=1, value="※ このシートが原本です。名前・Tierは勤務希望シートに自動反映されます。").font = Font(color="888888", size=9)
+
+    # ヘッダー (row 3)
     for c, txt in enumerate(staff_headers, 1):
-        cell = ws_c.cell(row=4, column=c, value=txt)
+        cell = ws_staff.cell(row=3, column=c, value=txt)
         cell.fill = staff_hdr_fill; cell.font = staff_hdr_font; cell.border = bdr
         cell.alignment = Alignment(horizontal="center")
-    # グループラベル (row 3)
-    ws_c.merge_cells(start_row=3, start_column=1, end_row=3, end_column=n_staff_cols)
-    grp1 = ws_c.cell(row=3, column=1, value="👤 スタッフ情報")
-    grp1.font = Font(bold=True, size=11, color="548235")
-    grp1.alignment = Alignment(horizontal="center")
 
-    # 勤務希望ヘッダー (row 3-4) — 青系
-    day_start_col = n_staff_cols + 1
-    ws_c.merge_cells(start_row=3, start_column=day_start_col,
-                     end_row=3, end_column=day_start_col + num_days - 1)
-    grp2 = ws_c.cell(row=3, column=day_start_col, value="📝 勤務希望")
-    grp2.font = Font(bold=True, size=11, color="1F4E79")
-    grp2.alignment = Alignment(horizontal="center")
+    # データ行
+    for i in range(total_rows):
+        r = 4 + i
+        _s_fill = staff_fill_even if i % 2 == 0 else staff_fill_odd
+        # 名前
+        name_val = samples_name[i] if i < len(samples_name) else f"スタッフ{i + 1}"
+        cell = ws_staff.cell(row=r, column=1, value=name_val)
+        cell.border = bdr; cell.fill = _s_fill
+        # Tier
+        tier_val = samples_tier[i] if i < len(samples_tier) else None
+        cell = ws_staff.cell(row=r, column=2)
+        cell.value = tier_val; cell.border = bdr; cell.fill = _s_fill
+        # 残りのカラム (夜勤専従〜祝日不可)
+        for c_idx in range(3, n_staff_cols + 1):
+            extra_val = None
+            if i < len(samples_extra):
+                extra_val = samples_extra[i][c_idx - 3]
+            cell = ws_staff.cell(row=r, column=c_idx)
+            cell.value = extra_val if extra_val is not None and extra_val != "" and extra_val != 0 else None
+            cell.border = bdr; cell.fill = _s_fill
 
+    # 列幅
+    ws_staff.column_dimensions["A"].width = 14
+    for i in range(1, n_staff_cols):
+        ws_staff.column_dimensions[get_column_letter(i + 1)].width = 10
+    ws_staff.freeze_panes = "B4"
+
+    # --- 凡例エリア ---
+    legend_start_row = 4 + total_rows + 2
+    ws_staff.cell(row=legend_start_row, column=1, value="📖 Tier定義").font = Font(bold=True, size=11, color="548235")
+    tier_defs = [
+        ("A", "ベテラン・リーダー格（夜勤リーダー）"),
+        ("AB", "中堅・リーダー代行可"),
+        ("B", "一人立ち済み・通常メンバー"),
+        ("C", "新人・経験浅い（A/AB/Bとペアに）"),
+    ]
+    for i, (tier, desc) in enumerate(tier_defs):
+        ws_staff.cell(row=legend_start_row + 1 + i, column=1, value=tier).font = Font(bold=True)
+        ws_staff.cell(row=legend_start_row + 1 + i, column=2, value=desc).font = Font(color="555555", size=9)
+    ws_staff.cell(row=legend_start_row + 6, column=1, value="📖 カラム説明").font = Font(bold=True, size=11, color="548235")
+    col_defs = [
+        ("夜勤専従", "ONで夜勤/明け/休のみのパターン"),
+        ("時短", "ONで時短(ST)/早出/遅出/休のみ"),
+        ("週勤務", "パートの週勤務日数（空欄=フルタイム）"),
+        ("前月末", "前月末の勤務状態（夜/明）"),
+        ("夜勤Min/Max", "個別の夜勤回数制限（空欄=全体設定）"),
+        ("連勤Max", "最大連続勤務日数（空欄=全体設定）"),
+        ("勤務曜日", "特定曜日のみ勤務（例:月水金）"),
+        ("祝日不可", "ONで祝日に勤務を入れない"),
+    ]
+    for i, (col_name, desc) in enumerate(col_defs):
+        ws_staff.cell(row=legend_start_row + 7 + i, column=1, value=col_name).font = Font(bold=True, size=9)
+        ws_staff.cell(row=legend_start_row + 7 + i, column=2, value=desc).font = Font(color="555555", size=9)
+
+    # ================================================================
+    # Sheet 3: 勤務希望（名前・Tierはスタッフ情報から数式参照）
+    # ================================================================
+    ws_req = wb.create_sheet("勤務希望")
+    ws_req.cell(row=1, column=1, value=f"📝 勤務希望 — {year}年{month}月").font = Font(bold=True, size=14)
+    ws_req.cell(row=2, column=1, value="名前・Tierはスタッフ情報シートから自動同期。日付セルにシフト記号を入力してください。").font = Font(color="888888", size=9)
+
+    # ヘッダー行 (row 3): 名前 | Tier | 1(月) | 2(火) | ...
+    # row 3 ヘッダー
+    req_headers_fixed = ["名前", "Tier"]
+    for c, txt in enumerate(req_headers_fixed, 1):
+        cell = ws_req.cell(row=3, column=c, value=txt)
+        cell.fill = staff_hdr_fill; cell.font = staff_hdr_font; cell.border = bdr
+        cell.alignment = Alignment(horizontal="center")
+
+    day_start_col = len(req_headers_fixed) + 1  # 3列目から日付
     for d in range(1, num_days + 1):
         col = day_start_col + d - 1
         wd_name = weekdays_jp[(first_wd + d - 1) % 7]
-        cell = ws_c.cell(row=4, column=col, value=f"{d}({wd_name})")
+        cell = ws_req.cell(row=3, column=col, value=f"{d}({wd_name})")
         cell.alignment = Alignment(horizontal="center")
         cell.border = bdr
         wd_idx = (first_wd + d - 1) % 7
@@ -722,81 +793,39 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
             cell.fill = PatternFill("solid", fgColor="BDD7EE")
             cell.font = Font(bold=True, color="1F4E79", size=9)
 
-    # --- 列幅 ---
-    ws_c.column_dimensions["A"].width = 14
-    for i in range(1, n_staff_cols):
-        ws_c.column_dimensions[get_column_letter(i + 1)].width = 10
-    for d in range(1, num_days + 1):
-        ws_c.column_dimensions[get_column_letter(day_start_col + d - 1)].width = 7
-
-    # --- サンプルデータ行（3行） + 空行（num_staff - 3行） ---
-    samples = [
-        ["山田太郎", "A", None, None, None, None, None, None, None, None, None],
-        ["佐藤花子", "AB", None, None, None, None, None, None, None, None, None],
-        ["鈴木一郎", "C", None, None, "3", None, None, None, None, "月水金", None],
-    ]
-    # ゼブラストライプ用の交互色（奇数行はかなり薄く）
-    staff_fill_even = PatternFill("solid", fgColor="E2EFDA")  # 薄緑（偶数行）
-    staff_fill_odd  = PatternFill("solid", fgColor="F5FAF0")  # ほぼ白の緑（奇数行）
-    req_fill_even   = PatternFill("solid", fgColor="D6E4F0")  # 薄青（偶数行）
-    req_fill_odd    = PatternFill("solid", fgColor="EFF5FB")  # ほぼ白の青（奇数行）
-
-    total_rows = max(num_staff, len(samples))
+    # データ行: 名前 = =スタッフ情報!A4, Tier = =スタッフ情報!B4
+    ref_fill = PatternFill("solid", fgColor="F2F2F2")  # 参照セルはグレー背景
+    ref_font = Font(color="888888", size=10)
     for i in range(total_rows):
-        r = 5 + i
-        if i < len(samples):
-            row_data = samples[i]
-        else:
-            row_data = [f"スタッフ{i + 1}"] + [None] * (n_staff_cols - 1)
-        # ゼブラストライプ: 偶数/奇数で色分け
-        _s_fill = staff_fill_even if i % 2 == 0 else staff_fill_odd
+        r = 4 + i
+        staff_row = 4 + i  # スタッフ情報シートの対応行
         _r_fill = req_fill_even if i % 2 == 0 else req_fill_odd
-        # スタッフ情報セル — 空は必ず None（0を防ぐ）
-        for c, val in enumerate(row_data, 1):
-            cell = ws_c.cell(row=r, column=c)
-            cell.value = val if val is not None and val != "" and val != 0 else None
-            cell.border = bdr
-            cell.fill = _s_fill
-        # 勤務希望セル — 必ず None
+
+        # 名前 — 数式で参照（空セルなら空白表示、編集不可グレー背景）
+        cell_name = ws_req.cell(row=r, column=1)
+        cell_name.value = f'=IF(スタッフ情報!A{staff_row}="","",スタッフ情報!A{staff_row})'
+        cell_name.border = bdr; cell_name.fill = ref_fill; cell_name.font = ref_font
+        # Tier — 数式で参照（空セルなら空白表示）
+        cell_tier = ws_req.cell(row=r, column=2)
+        cell_tier.value = f'=IF(スタッフ情報!B{staff_row}="","",スタッフ情報!B{staff_row})'
+        cell_tier.border = bdr; cell_tier.fill = ref_fill; cell_tier.font = ref_font
+        cell_tier.alignment = Alignment(horizontal="center")
+        # 勤務希望セル — 空欄
         for d in range(1, num_days + 1):
-            cell = ws_c.cell(row=r, column=day_start_col + d - 1)
+            cell = ws_req.cell(row=r, column=day_start_col + d - 1)
             cell.value = None
-            cell.border = bdr
-            cell.fill = _r_fill
+            cell.border = bdr; cell.fill = _r_fill
 
-    # --- 凡例エリア（データの下に余白を空けて配置） ---
-    legend_start_row = 5 + total_rows + 2
-    # Tier定義
-    ws_c.cell(row=legend_start_row, column=1, value="📖 Tier定義").font = Font(bold=True, size=11, color="548235")
-    tier_defs = [
-        ("A", "ベテラン・リーダー格（夜勤リーダー）"),
-        ("AB", "中堅・リーダー代行可"),
-        ("B", "一人立ち済み・通常メンバー"),
-        ("C", "新人・経験浅い（A/AB/Bとペアに）"),
-    ]
-    for i, (tier, desc) in enumerate(tier_defs):
-        ws_c.cell(row=legend_start_row + 1 + i, column=1, value=tier).font = Font(bold=True)
-        ws_c.cell(row=legend_start_row + 1 + i, column=2, value=desc).font = Font(color="555555", size=9)
+    # 列幅
+    ws_req.column_dimensions["A"].width = 14
+    ws_req.column_dimensions["B"].width = 8
+    for d in range(1, num_days + 1):
+        ws_req.column_dimensions[get_column_letter(day_start_col + d - 1)].width = 7
+    ws_req.freeze_panes = "C4"  # 名前+Tier固定、日付スクロール
 
-    # カラム説明
-    ws_c.cell(row=legend_start_row + 6, column=1, value="📖 カラム説明").font = Font(bold=True, size=11, color="548235")
-    col_defs = [
-        ("夜勤専従", "ONで夜勤/明け/休のみのパターン"),
-        ("時短", "ONで時短(ST)/早出/遅出/休のみ"),
-        ("週勤務", "パートの週勤務日数（空欄=フルタイム）"),
-        ("前月末", "前月末の勤務状態（夜/明）"),
-        ("夜勤Min/Max", "個別の夜勤回数制限（空欄=全体設定）"),
-        ("連勤Max", "最大連続勤務日数（空欄=全体設定）"),
-        ("勤務曜日", "特定曜日のみ勤務（例:月水金）"),
-        ("祝日不可", "ONで祝日に勤務を入れない"),
-    ]
-    for i, (col_name, desc) in enumerate(col_defs):
-        ws_c.cell(row=legend_start_row + 7 + i, column=1, value=col_name).font = Font(bold=True, size=9)
-        ws_c.cell(row=legend_start_row + 7 + i, column=2, value=desc).font = Font(color="555555", size=9)
-
-    # シフト種別
-    shift_legend_col = 5
-    ws_c.cell(row=legend_start_row, column=shift_legend_col, value="📖 シフト種別").font = Font(bold=True, size=11, color="1F4E79")
+    # --- シフト種別凡例 ---
+    req_legend_row = 4 + total_rows + 2
+    ws_req.cell(row=req_legend_row, column=1, value="📖 シフト種別").font = Font(bold=True, size=11, color="1F4E79")
     shift_legend = [
         ("日", "日勤 (8:00〜17:00)"), ("夜", "夜勤 (16:45〜翌9:00 / 16h)"),
         ("準", "短夜勤 (17:00〜翌5:00 / 12h)"), ("早", "早出 (7:00〜16:00)"),
@@ -806,19 +835,23 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
         ("休暇", "有給休暇"), ("明休", "明け＋翌日も休み"),
     ]
     for i, (sym, desc) in enumerate(shift_legend):
-        ws_c.cell(row=legend_start_row + 1 + i, column=shift_legend_col, value=sym).font = Font(bold=True, size=10)
-        ws_c.cell(row=legend_start_row + 1 + i, column=shift_legend_col + 1, value=desc).font = Font(color="555555", size=9)
+        ws_req.cell(row=req_legend_row + 1 + i, column=1, value=sym).font = Font(bold=True, size=10)
+        ws_req.cell(row=req_legend_row + 1 + i, column=2, value=desc).font = Font(color="555555", size=9)
 
-    # ウィンドウ枠の固定（ヘッダー + 名前列）
-    ws_c.freeze_panes = "B5"
-
-    # --- 非表示カラムの列を折りたたむ ---
-    if hidden_staff_cols:
-        for h_col_name in hidden_staff_cols:
-            if h_col_name in staff_headers:
-                col_idx = staff_headers.index(h_col_name) + 1  # 1-based
-                col_letter = get_column_letter(col_idx)
-                ws_c.column_dimensions[col_letter].hidden = True
+    # シート保護: 勤務希望シートの名前・Tier列を保護（数式を壊さないように）
+    from openpyxl.worksheet.protection import SheetProtection
+    ws_req.protection = SheetProtection(sheet=True, objects=True, scenarios=True,
+                                         formatColumns=False, formatRows=False)
+    # 名前・Tier列はロック、日付セルはロック解除
+    from openpyxl.styles import Protection as CellProtection
+    locked = CellProtection(locked=True)
+    unlocked = CellProtection(locked=False)
+    for i in range(total_rows):
+        r = 4 + i
+        ws_req.cell(row=r, column=1).protection = locked
+        ws_req.cell(row=r, column=2).protection = locked
+        for d in range(1, num_days + 1):
+            ws_req.cell(row=r, column=day_start_col + d - 1).protection = unlocked
 
     buf = BytesIO()
     wb.save(buf)
@@ -845,24 +878,56 @@ def _parse_uploaded_excel(uploaded_file, year, month):
             rows.append(row_vals)
         gs_settings = _parse_settings(rows)
 
-    # --- 統合シート形式（新テンプレ） or 分離シート形式（旧テンプレ） ---
+    # --- テンプレ形式の自動検出（3種対応） ---
+    # 1. 新形式: 「スタッフ情報」+「勤務希望」（2シート分離、数式参照）
+    # 2. 旧統合形式: 「スタッフ・勤務希望」（1シート統合）
+    # 3. 旧分離形式: 「スタッフ一覧」+「勤務希望」
     staff_list = []
     reqs = {}
     n_staff_cols = 11  # 名前〜祝日不可
 
-    if "スタッフ・勤務希望" in wb.sheetnames:
-        # 新フォーマット（統合シート）
+    if "スタッフ情報" in wb.sheetnames:
+        # === 新形式（スタッフ情報 + 勤務希望 2シート） ===
+        ws_si = wb["スタッフ情報"]
+        staff_rows = []
+        for r in range(4, ws_si.max_row + 1):  # row 4 からデータ
+            name_val = ws_si.cell(row=r, column=1).value
+            if not name_val or not str(name_val).strip():
+                continue
+            s_vals = [ws_si.cell(row=r, column=c).value or "" for c in range(1, n_staff_cols + 1)]
+            staff_rows.append(s_vals)
+        if staff_rows:
+            staff_list = _parse_staff_list(staff_rows)
+        staff_names = [s.name for s in staff_list]
+
+        if "勤務希望" in wb.sheetnames:
+            ws_rq = wb["勤務希望"]
+            req_rows = []
+            day_start = 3  # 勤務希望シートは 列C(3) から日付
+            for r in range(4, ws_rq.max_row + 1):  # row 4 からデータ
+                # 名前は数式参照で入っている → data_only=True なので値が読める
+                name_val = ws_rq.cell(row=r, column=1).value
+                if not name_val or not str(name_val).strip():
+                    continue
+                r_vals = [str(name_val).strip()]
+                for d in range(1, num_days + 1):
+                    v = ws_rq.cell(row=r, column=day_start + d - 1).value or ""
+                    r_vals.append(v)
+                req_rows.append(r_vals)
+            if req_rows:
+                reqs = _parse_requests(req_rows, staff_names, num_days)
+
+    elif "スタッフ・勤務希望" in wb.sheetnames:
+        # === 旧統合形式 ===
         ws = wb["スタッフ・勤務希望"]
         staff_rows = []
         req_rows = []
-        for r in range(5, ws.max_row + 1):  # row 5 からデータ
+        for r in range(5, ws.max_row + 1):
             name_val = ws.cell(row=r, column=1).value
             if not name_val or not str(name_val).strip():
                 continue
-            # スタッフ情報（列 1〜11）
             s_vals = [ws.cell(row=r, column=c).value or "" for c in range(1, n_staff_cols + 2)]
             staff_rows.append(s_vals)
-            # 勤務希望（列 12〜）
             day_start = n_staff_cols + 1
             r_vals = [str(name_val).strip()]
             for d in range(1, num_days + 1):
@@ -875,7 +940,7 @@ def _parse_uploaded_excel(uploaded_file, year, month):
         if req_rows:
             reqs = _parse_requests(req_rows, staff_names, num_days)
     else:
-        # 旧フォーマット（分離シート）
+        # === 旧分離形式 ===
         if "スタッフ一覧" in wb.sheetnames:
             ws = wb["スタッフ一覧"]
             staff_rows = []
@@ -1075,15 +1140,7 @@ with tab0:
         tmpl_staff_count = st.number_input(
             "テンプレートのスタッフ人数", min_value=1, max_value=100,
             value=15, step=1, key="tmpl_staff_count")
-        _tmpl_all_cols = ["Tier", "夜勤専従", "時短", "週勤務", "前月末",
-                          "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可"]
-        with st.expander("⚙ テンプレートに表示するスタッフ情報カラム", expanded=False):
-            _tmpl_visible = st.multiselect(
-                "表示カラム", _tmpl_all_cols, default=_tmpl_all_cols,
-                key="tmpl_col_toggle")
-        _tmpl_hidden = [c for c in _tmpl_all_cols if c not in _tmpl_visible]
-        template_bytes = _generate_template_excel(year, month, num_staff=tmpl_staff_count,
-                                                  hidden_staff_cols=_tmpl_hidden if _tmpl_hidden else None)
+        template_bytes = _generate_template_excel(year, month, num_staff=tmpl_staff_count)
         st.download_button(
             label=f"📄 Excelテンプレート（{year}年{month}月・{tmpl_staff_count}人）",
             data=template_bytes,
@@ -1381,7 +1438,8 @@ with tab1:
     if view_mode == "👤 スタッフ情報":
         show_cols = ["名前"] + _visible_staff_cols
     elif view_mode == "📝 勤務希望":
-        show_cols = ["名前"] + _day_cols
+        # 勤務希望: 名前 + Tier（読み取り専用）+ 日付列
+        show_cols = ["名前", "Tier"] + _day_cols
     else:
         show_cols = ["名前"] + _visible_staff_cols + _day_cols
 
@@ -1399,8 +1457,13 @@ with tab1:
         "祝日不可": st.column_config.CheckboxColumn("祝日不可", width="small"),
     }
     col_config = {}
-    col_config["名前"] = st.column_config.TextColumn("名前", width="medium")
-    # 選択されたスタッフ情報カラムのみ追加
+    # 勤務希望モードでは名前・Tierを読み取り専用に
+    if view_mode == "📝 勤務希望":
+        col_config["名前"] = st.column_config.TextColumn("名前", width="medium", disabled=True)
+        col_config["Tier"] = st.column_config.TextColumn("Tier", width="small", disabled=True)
+    else:
+        col_config["名前"] = st.column_config.TextColumn("名前", width="medium")
+    # 選択されたスタッフ情報カラムのみ追加（勤務希望モード以外）
     if view_mode != "📝 勤務希望":
         for c in _visible_staff_cols:
             if c in _col_config_defs:
