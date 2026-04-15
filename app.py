@@ -630,6 +630,40 @@ def _generate_template_excel(year, month):
         ws_s.cell(row=r, column=3, value=desc).border = bdr
         ws_s.cell(row=r, column=3).font = Font(color="888888", size=9)
 
+    # コンプライアンス・運用条件（参考情報 — アプリ側のサイドバーで設定）
+    comp_start = 4 + len(SETTINGS_DEF) + 2
+    ws_s.cell(row=comp_start, column=1, value="コンプライアンス・運用条件（参考）").font = Font(
+        bold=True, size=12, color="C00000")
+    ws_s.cell(row=comp_start + 1, column=1, value="※以下はアプリのサイドバーで設定します（Excel上では参考情報）").font = Font(
+        color="888888", size=9)
+    comp_items = [
+        ("72時間規制", "strict / soft / none",
+         "strict=必ず準拠, soft=なるべく準拠(ペナルティ), none=チェックのみ"),
+        ("長日勤→翌日短夜勤", "strict / soft / none",
+         "LD(12h)の翌日にSN(12h)を入れるか"),
+        ("長日勤の連続禁止", "strict / soft / none",
+         "LD(12h)を2日連続で割り当てるか"),
+        ("夜勤時間数", "16",
+         "1夜勤あたりの時間数（二交代=16h）"),
+        ("ユニット種別", "ICU",
+         "ICU/HCU/NICU/GCU/SCU/PICU/一般病棟等"),
+        ("病床数", "10",
+         "人員配置基準の計算に使用"),
+    ]
+    for c, txt in enumerate(["項目", "設定値", "説明"], 1):
+        cell = ws_s.cell(row=comp_start + 2, column=c, value=txt)
+        cell.fill = PatternFill("solid", fgColor="C00000")
+        cell.font = Font(bold=True, color="FFFFFF", size=11)
+        cell.border = bdr
+        cell.alignment = Alignment(horizontal="center")
+    for i, (label, default, desc) in enumerate(comp_items):
+        r = comp_start + 3 + i
+        ws_s.cell(row=r, column=1, value=label).border = bdr
+        ws_s.cell(row=r, column=2, value=default).border = bdr
+        ws_s.cell(row=r, column=2).font = Font(color="666666")
+        ws_s.cell(row=r, column=3, value=desc).border = bdr
+        ws_s.cell(row=r, column=3).font = Font(color="888888", size=9)
+
     # --- Sheet 2: スタッフ一覧 ---
     ws_st = wb.create_sheet("スタッフ一覧")
     headers = ["名前", "Tier", "夜勤専従", "時短", "週勤務", "前月末",
@@ -1123,25 +1157,34 @@ with tab0:
 with tab1:
     st.subheader("スタッフ一覧")
 
-    # --- スタッフ一括追加 ---
-    col_add1, col_add2 = st.columns([1, 3])
-    with col_add1:
-        add_count = st.number_input("追加人数", min_value=1, max_value=50, value=5, step=1, key="add_staff_count")
-    with col_add2:
+    # --- スタッフ枠数設定 ---
+    current_count = len(st.session_state.staff_df.dropna(subset=["名前"]))
+    col_cnt, col_btn = st.columns([1, 3])
+    with col_cnt:
+        target_count = st.number_input("スタッフ人数", min_value=1, max_value=100,
+                                        value=max(current_count, 5), step=1, key="staff_total_count")
+    with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button(f"➕ {add_count}人を一括追加", key="btn_add_staff"):
-            current = st.session_state.staff_df
-            existing_count = len(current.dropna(subset=["名前"]))
-            new_rows = []
-            for i in range(add_count):
-                new_rows.append({
-                    "名前": f"スタッフ{existing_count + i + 1}",
-                    "Tier": "C", "夜勤専従": False, "時短": False,
-                    "週勤務": None, "前月末": "", "夜勤Min": None,
-                    "夜勤Max": None, "連勤Max": None, "勤務曜日": "", "祝日不可": False,
-                })
-            st.session_state.staff_df = pd.concat(
-                [current, pd.DataFrame(new_rows)], ignore_index=True)
+        if st.button(f"✅ {target_count}人枠に確定", key="btn_set_staff_count"):
+            current_df = st.session_state.staff_df
+            valid_rows = current_df.dropna(subset=["名前"])
+            valid_rows = valid_rows[valid_rows["名前"].str.strip() != ""]
+            existing = len(valid_rows)
+            if target_count > existing:
+                # 不足分を追加
+                new_rows = []
+                for i in range(target_count - existing):
+                    new_rows.append({
+                        "名前": f"スタッフ{existing + i + 1}",
+                        "Tier": "C", "夜勤専従": False, "時短": False,
+                        "週勤務": None, "前月末": "", "夜勤Min": None,
+                        "夜勤Max": None, "連勤Max": None, "勤務曜日": "", "祝日不可": False,
+                    })
+                st.session_state.staff_df = pd.concat(
+                    [valid_rows, pd.DataFrame(new_rows)], ignore_index=True)
+            elif target_count < existing:
+                # 先頭N人だけ残す
+                st.session_state.staff_df = valid_rows.head(target_count).reset_index(drop=True)
             st.rerun()
 
     # --- Tier定義パネル ---
