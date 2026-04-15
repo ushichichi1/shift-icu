@@ -696,7 +696,6 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
     grp1 = ws_c.cell(row=3, column=1, value="👤 スタッフ情報")
     grp1.font = Font(bold=True, size=11, color="548235")
     grp1.alignment = Alignment(horizontal="center")
-    grp1.fill = PatternFill("solid", fgColor="E2EFDA")
 
     # 勤務希望ヘッダー (row 3-4) — 青系
     day_start_col = n_staff_cols + 1
@@ -705,7 +704,6 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
     grp2 = ws_c.cell(row=3, column=day_start_col, value="📝 勤務希望")
     grp2.font = Font(bold=True, size=11, color="1F4E79")
     grp2.alignment = Alignment(horizontal="center")
-    grp2.fill = PatternFill("solid", fgColor="D6E4F0")
 
     for d in range(1, num_days + 1):
         col = day_start_col + d - 1
@@ -733,15 +731,15 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
 
     # --- サンプルデータ行（3行） + 空行（num_staff - 3行） ---
     samples = [
-        ["山田太郎", "A", "", "", "", "", "", "", "", "", ""],
-        ["佐藤花子", "AB", "", "", "", "", "", "", "", "", ""],
-        ["鈴木一郎", "C", "", "", "3", "", "", "", "", "月水金", ""],
+        ["山田太郎", "A", None, None, None, None, None, None, None, None, None],
+        ["佐藤花子", "AB", None, None, None, None, None, None, None, None, None],
+        ["鈴木一郎", "C", None, None, "3", None, None, None, None, "月水金", None],
     ]
-    # ゼブラストライプ用の交互色
+    # ゼブラストライプ用の交互色（奇数行はかなり薄く）
     staff_fill_even = PatternFill("solid", fgColor="E2EFDA")  # 薄緑（偶数行）
-    staff_fill_odd  = PatternFill("solid", fgColor="F0F7EB")  # より薄い緑（奇数行）
+    staff_fill_odd  = PatternFill("solid", fgColor="F5FAF0")  # ほぼ白の緑（奇数行）
     req_fill_even   = PatternFill("solid", fgColor="D6E4F0")  # 薄青（偶数行）
-    req_fill_odd    = PatternFill("solid", fgColor="E8F0F8")  # より薄い青（奇数行）
+    req_fill_odd    = PatternFill("solid", fgColor="EFF5FB")  # ほぼ白の青（奇数行）
 
     total_rows = max(num_staff, len(samples))
     for i in range(total_rows):
@@ -749,16 +747,17 @@ def _generate_template_excel(year, month, num_staff=20, hidden_staff_cols=None):
         if i < len(samples):
             row_data = samples[i]
         else:
-            row_data = [f"スタッフ{i + 1}"] + [""] * (n_staff_cols - 1)
+            row_data = [f"スタッフ{i + 1}"] + [None] * (n_staff_cols - 1)
         # ゼブラストライプ: 偶数/奇数で色分け
         _s_fill = staff_fill_even if i % 2 == 0 else staff_fill_odd
         _r_fill = req_fill_even if i % 2 == 0 else req_fill_odd
-        # スタッフ情報セル
+        # スタッフ情報セル — 空は必ず None（0を防ぐ）
         for c, val in enumerate(row_data, 1):
-            cell = ws_c.cell(row=r, column=c, value=val if val != "" else None)
+            cell = ws_c.cell(row=r, column=c)
+            cell.value = val if val is not None and val != "" and val != 0 else None
             cell.border = bdr
             cell.fill = _s_fill
-        # 勤務希望セル（空欄 — value設定しない = None）
+        # 勤務希望セル — 必ず None
         for d in range(1, num_days + 1):
             cell = ws_c.cell(row=r, column=day_start_col + d - 1)
             cell.value = None
