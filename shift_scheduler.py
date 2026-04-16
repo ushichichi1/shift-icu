@@ -806,7 +806,6 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     night_training_map = {s.name: s.night_training for s in staff_list}
     night_training_max_map = {s.name: s.night_training_max for s in staff_list}
     training_staff = [s.name for s in staff_list if s.night_training]
-    non_training   = [n for n in names if not night_training_map.get(n)]
 
     fulltime  = [n for n in names if weekly[n] is None]
     parttime  = [n for n in names if weekly[n] is not None]
@@ -1021,29 +1020,47 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         # ハード下限
         prob += day_sum >= _hard_min_day
     # 夜勤人数: 夜勤(N) + 短夜勤(SN) の合計
-    training_short = {}  # 研修夜勤の不足ペナルティ変数
+    # --- 夜勤研修モデル ---
+    # 研修スタッフは通常メンバーとして夜勤に入る。
+    # 最初のN回は研修（3人目追加枠）、残りは通常2人枠。
+    # train_flag[s,d]=1 → その日の夜勤は研修扱い（3人目、通常枠に含めない）
+    train_flag = {}
     if training_staff:
-        # 研修スタッフは通常枠から除外し、3人目枠（≤1人/日）として別管理
-        for d in days:
-            prob += pulp.lpSum(x[s, d, t] for s in non_training for t in NIGHT_SHIFTS) == night_count
-            prob += pulp.lpSum(x[s, d, t] for s in training_staff for t in NIGHT_SHIFTS) <= 1
-        # 研修夜勤回数: 指定値=ぴったりハード、未指定=最低1回
         for s in training_staff:
-            total_tn = pulp.lpSum(x[s, d, t] for d in days for t in NIGHT_SHIFTS)
+            for d in days:
+                train_flag[s, d] = pulp.LpVariable(f"tf_{s}_{d}", cat=pulp.LpBinary)
+                # 夜勤に入っていない日は研修フラグ不可
+                prob += train_flag[s, d] <= pulp.lpSum(x[s, d, t] for t in NIGHT_SHIFTS)
+        # 研修回数
+        for s in training_staff:
             nt_max = night_training_max_map.get(s)
             if nt_max is not None:
-                prob += total_tn == nt_max  # 指定回数ぴったり（ハード）
+                prob += pulp.lpSum(train_flag[s, d] for d in days) == nt_max
             else:
-                # 上限なし: 最低1回は入れる（研修ONの意味がないため）
-                prob += total_tn >= 1
-        print(f"  夜勤研修: {len(training_staff)}名 → 通常{night_count}人 + 研修≤1人/日 (MAX3人)")
+                prob += pulp.lpSum(train_flag[s, d] for d in days) >= 1
+        # 研修者同日重複なし（3人目枠は1人/日）
+        for d in days:
+            prob += pulp.lpSum(train_flag[s, d] for s in training_staff) <= 1
+        # 通常夜勤人数 = 全夜勤 - 研修フラグ分 = night_count
+        for d in days:
+            prob += (pulp.lpSum(x[s, d, t] for s in names for t in NIGHT_SHIFTS)
+                     - pulp.lpSum(train_flag[s, d] for s in training_staff)) == night_count
+        # 順序制約: 研修夜勤は先（日付順）、通常夜勤は後
+        # 「通常夜勤(d1) の後に研修夜勤(d2) は不可」(d1 < d2)
+        for s in training_staff:
+            for d1 in days:
+                for d2 in days:
+                    if d1 < d2:
+                        # x[s,d1,N]-flag[d1]=通常夜勤d1, flag[d2]=研修夜勤d2 → 両立不可
+                        prob += (pulp.lpSum(x[s, d1, t] for t in NIGHT_SHIFTS)
+                                 - train_flag[s, d1] + train_flag[s, d2] <= 1)
+        print(f"  夜勤研修: {len(training_staff)}名 → 最初のN回=3人夜勤、残り=通常2人夜勤")
     else:
         for d in days:
             prob += pulp.lpSum(x[s, d, t] for s in names for t in NIGHT_SHIFTS) == night_count
     # 夜勤Min/Max + 均等配分
     # Min=ハード制約（最低回数）、残り枠を均等配分、Max=ソフト制約
-    # 研修スタッフは通常枠の均等配分から除外（研修夜勤回数は別管理）
-    ft_non_ded = [s for s in fulltime if not dedicated[s] and not night_training_map.get(s)]
+    ft_non_ded = [s for s in fulltime if not dedicated[s]]
     ft_min_total = sum((night_min[s] or 0) for s in ft_non_ded if night_min[s] is not None)
     ft_slots = night_count * num_days
     ded_slots = sum(
@@ -1069,9 +1086,6 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             # 専従: Max制約のみ（ハード）
             s_max = night_max[s] if night_max[s] is not None else max_n_ded
             prob += total_n <= s_max
-            continue
-        if night_training_map.get(s):
-            # 研修スタッフ: 月間上限は別途設定済み、通常Min/Maxは適用しない
             continue
         # 通常スタッフ: Min=ハード, Max=ソフト
         s_min = night_min[s]
@@ -1404,8 +1418,7 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         obj += 30 * pulp.lpSum(ld_sn_pen[i] for i in ld_sn_pen)
     if ld_consec_pen:
         obj += 20 * pulp.lpSum(ld_consec_pen[i] for i in ld_consec_pen)
-    if training_short:
-        obj += 150 * pulp.lpSum(training_short[s] for s in training_short)  # 研修夜勤不足
+    # (研修夜勤回数はハード制約で管理、ソフトペナルティ不要)
     prob += obj
 
     # ============================================================
