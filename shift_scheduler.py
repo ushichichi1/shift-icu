@@ -159,7 +159,8 @@ class Staff:
     def __init__(self, name, tier, dedicated=False, weekly_days=None, prev_month="",
                  night_min=None, night_max=None, consec_max=None,
                  work_days=None, no_holiday=False, short_time=False,
-                 no_weekend=False, night_training=False, night_training_max=None):
+                 no_weekend=False, night_training=False, night_training_max=None,
+                 new_hire=False, new_hire_graduation_day=None):
         self.name = name
         self.tier = tier
         self.dedicated = dedicated
@@ -174,6 +175,8 @@ class Staff:
         self.no_weekend = no_weekend    # True=土日勤務不可
         self.night_training = night_training      # True=夜勤研修中（3人目枠）
         self.night_training_max = night_training_max  # None=制限なし, int=月間研修夜勤上限
+        self.new_hire = new_hire        # True=新人期間中（リーダー・B+C判定から除外）
+        self.new_hire_graduation_day = new_hire_graduation_day  # None=月末まで新人, int=その日まで新人（翌日から通常）
     @property
     def is_parttime(self):
         return self.weekly_days is not None
@@ -188,7 +191,7 @@ def create_template():
     # --- スタッフ一覧 ---
     ws1 = wb.active
     ws1.title = "スタッフ一覧"
-    headers = ["名前", "Tier", "夜勤専従", "週勤務", "前月末", "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可", "土日不可", "夜勤研修", "研修夜勤回数"]
+    headers = ["名前", "Tier", "夜勤専従", "週勤務", "前月末", "夜勤Min", "夜勤Max", "連勤Max", "勤務曜日", "祝日不可", "土日不可", "夜勤研修", "研修夜勤回数", "新人", "新人卒業日"]
     for i, h in enumerate(headers, 1):
         c = ws1.cell(row=1, column=i, value=h)
         c.font = FONT_H; c.fill = FH; c.border = BDR; c.alignment = CTR
@@ -359,8 +362,11 @@ def _parse_staff_list(rows):
         no_we = _is_truthy(row[col_offset+7]) if len(row) > col_offset+7 else False
         night_tr = _is_truthy(row[col_offset+8]) if len(row) > col_offset+8 else False
         nt_max = _to_int(row[col_offset+9]) if len(row) > col_offset+9 else None
+        new_h = _is_truthy(row[col_offset+10]) if len(row) > col_offset+10 else False
+        nh_grad = _to_int(row[col_offset+11]) if len(row) > col_offset+11 else None
         staff.append(Staff(name, tier, ded, weekly, prev, n_min, n_max, c_max,
-                           work_days, no_hol, short_t, no_we, night_tr, nt_max))
+                           work_days, no_hol, short_t, no_we, night_tr, nt_max,
+                           new_h, nh_grad))
     if not staff:
         print("✗ スタッフが0人です")
         sys.exit(1)
@@ -806,6 +812,18 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     night_training_map = {s.name: s.night_training for s in staff_list}
     night_training_max_map = {s.name: s.night_training_max for s in staff_list}
     training_staff = [s.name for s in staff_list if s.night_training]
+    new_hire_map = {s.name: s.new_hire for s in staff_list}
+    new_hire_grad_map = {s.name: s.new_hire_graduation_day for s in staff_list}
+
+    def is_new_hire_on(s, d_idx):
+        """d_idx (0-indexed) 時点でスタッフsが新人期間中か判定"""
+        if not new_hire_map.get(s):
+            return False
+        grad = new_hire_grad_map.get(s)
+        if grad is None:
+            return True  # 月末まで新人
+        # day_num = d_idx + 1 が grad 以下なら新人、grad より大きければ通常扱い
+        return (d_idx + 1) <= grad
 
     fulltime  = [n for n in names if weekly[n] is None]
     parttime  = [n for n in names if weekly[n] is not None]
@@ -815,6 +833,7 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     b_staff   = [n for n in names if tiers[n] == TIER_B and weekly[n] is None]
     c_staff   = [n for n in names if tiers[n] == TIER_C and weekly[n] is None]
     leader    = [n for n in (a_staff + ab_staff) if weekly[n] is None]
+    new_hire_staff = [n for n in names if new_hire_map.get(n)]
 
     print(f"\n{'='*55}")
     print(f"  勤務表: {year}年{month}月 ({num_days}日)")
@@ -827,6 +846,12 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     carry = [(n, prev_m[n]) for n in names if prev_m[n]]
     if carry:
         print(f"前月繰越: {', '.join(f'{n}({v})' for n, v in carry)}")
+    if new_hire_staff:
+        nh_str = ", ".join(
+            f"{n}({'月末まで' if new_hire_grad_map.get(n) is None else f'{new_hire_grad_map[n]}日まで'})"
+            for n in new_hire_staff
+        )
+        print(f"新人: {nh_str}")
     if po_override is not None and po_override != "":
         print(f"公休日数: {public_off}日 (手動設定)  ※自動計算={auto_public_off}日")
     else:
@@ -1098,10 +1123,14 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
                 nm_var = pulp.LpVariable(f"nmin_miss_{s}", lowBound=0)
                 prob += nm_var >= s_min - total_n
                 night_min_miss[s] = nm_var
-        # Max制約（ソフト: 超過にペナルティ）
-        nm_over = pulp.LpVariable(f"nmax_over_{s}", lowBound=0)
-        prob += nm_over >= total_n - s_max
-        night_max_over[s] = nm_over
+        # Max制約: 0が明示指定されている場合はハード（完全禁止）、それ以外はソフト
+        if night_max[s] is not None and night_max[s] == 0:
+            prob += total_n == 0  # ハード: 夜勤禁止
+        else:
+            # ソフト: 超過にペナルティ
+            nm_over = pulp.LpVariable(f"nmax_over_{s}", lowBound=0)
+            prob += nm_over >= total_n - s_max
+            night_max_over[s] = nm_over
     # 72時間規制（日本看護協会ガイドライン）
     # N=night_hours h, SN=12h として月合計時間を計算
     # night_72h_mode: "strict"=ハード制約, "soft"=ペナルティ, "none"=チェックなし
@@ -1230,12 +1259,17 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             ) <= limit
     if c_staff:
         for d in days:
-            prob += pulp.lpSum(x[s, d, N] for s in c_staff) <= 1
+            # 新人C は「独立Cとしてはカウントしない」（ペア判定から除外）
+            c_effective = [s for s in c_staff if not is_new_hire_on(s, d)]
+            if c_effective:
+                prob += pulp.lpSum(x[s, d, N] for s in c_effective) <= 1
     if leader:
         for d in days:
-            prob += pulp.lpSum(x[s, d, D] for s in leader) >= 1
-        for d in days:
-            prob += pulp.lpSum(x[s, d, N] for s in leader) >= 1
+            # 新人期間中のリーダーは「独立したリーダー」としてカウントしない
+            leader_effective = [s for s in leader if not is_new_hire_on(s, d)]
+            if leader_effective:
+                prob += pulp.lpSum(x[s, d, D] for s in leader_effective) >= 1
+                prob += pulp.lpSum(x[s, d, N] for s in leader_effective) >= 1
 
     # 休暇(V)は希望がある日のみ — それ以外は禁止
     for s in names:
@@ -1309,9 +1343,11 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     if a_staff:
         a_ft = [n for n in a_staff if weekly[n] is None]
         for d in days:
-            if a_ft:
+            # 新人期間中のAは「独立したAリーダー」としてカウントしない
+            a_ft_eff = [s for s in a_ft if not is_new_hire_on(s, d)]
+            if a_ft_eff:
                 # N または SN どちらかにAスタッフが入っていればOK
-                prob += pulp.lpSum(x[s, d, t] for s in a_ft for t in NIGHT_SHIFTS) + a_miss[d] >= 1
+                prob += pulp.lpSum(x[s, d, t] for s in a_ft_eff for t in NIGHT_SHIFTS) + a_miss[d] >= 1
             else:
                 prob += a_miss[d] == 1
     else:
@@ -1344,8 +1380,14 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     bc_pen = pulp.LpVariable.dicts("bc", days, cat=pulp.LpBinary)
     if b_staff and c_staff:
         for d in days:
-            prob += (pulp.lpSum(x[s, d, N] for s in b_staff) +
-                     pulp.lpSum(x[s, d, N] for s in c_staff) - 1) <= bc_pen[d]
+            # 新人B/Cは実務上のB/Cとしてカウントしない（ペア判定から除外）
+            b_eff = [s for s in b_staff if not is_new_hire_on(s, d)]
+            c_eff = [s for s in c_staff if not is_new_hire_on(s, d)]
+            if b_eff and c_eff:
+                prob += (pulp.lpSum(x[s, d, N] for s in b_eff) +
+                         pulp.lpSum(x[s, d, N] for s in c_eff) - 1) <= bc_pen[d]
+            else:
+                prob += bc_pen[d] == 0
     else:
         for d in days:
             prob += bc_pen[d] == 0
