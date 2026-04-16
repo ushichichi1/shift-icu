@@ -1523,6 +1523,16 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             nd_max_v = max(nd_counts.values())
             print(f"  夜勤均等(N+準): {nd_min_v}〜{nd_max_v}回 (差{nd_max_v - nd_min_v})")
 
+        # 新人情報（日ごとの判定関数の結果をmapに展開して保存）
+        new_hire_days = {}  # {staff_name: set of day_num (1-indexed) 新人扱いの日}
+        for s in names:
+            if new_hire_map.get(s):
+                nh_set = set()
+                for d_idx in range(num_days):
+                    if is_new_hire_on(s, d_idx):
+                        nh_set.add(d_idx + 1)
+                new_hire_days[s] = nh_set
+
         result = {
             "schedule": schedule, "names": names, "tiers": tiers,
             "num_days": num_days, "year": year, "month": month,
@@ -1531,6 +1541,9 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             "public_off": public_off, "weekly": weekly,
             "dedicated": dedicated, "short_time": short_time_map,
             "missed_requests": missed_requests,
+            "new_hire_days": new_hire_days,
+            "new_hire_map": dict(new_hire_map),
+            "new_hire_grad_map": dict(new_hire_grad_map),
             "pattern_num": pat_num,
         }
         all_results.append(result)
@@ -1627,7 +1640,12 @@ def _write_one_sheet(wb, result, sheet_title):
     weekends = result.get("weekends", set())
     weekly_d = result.get("weekly", {})
     missed   = result.get("missed_requests", {})
+    new_hire_days = result.get("new_hire_days", {})  # {name: set of 1-indexed days}
     min_day  = settings.get("min_day_staff") or 5
+
+    def _is_nh(s, d_idx):
+        """0-indexed day: そのスタッフがその日新人扱いか"""
+        return (d_idx + 1) in new_hire_days.get(s, set())
 
     ws = wb.create_sheet(title=sheet_title)
     wdj = ["月", "火", "水", "木", "金", "土", "日"]
@@ -1736,6 +1754,20 @@ def _write_one_sheet(wb, result, sheet_title):
     row += 1
     ws.cell(row=row, column=1, value="日別集計").font = FONT_H
     row += 1
+
+    # 新人が一人でもいれば「日勤計(新人除く)」行を追加
+    has_new_hire = bool(new_hire_days)
+    if has_new_hire:
+        ws.cell(row=row, column=1, value="日勤計(新人除く)").font = FONT_H
+        ws.cell(row=row, column=1).border = BDR
+        for d in range(num_days):
+            cnt = sum(1 for s in names
+                      if schedule[s][d] in DAY_SHIFTS and not _is_nh(s, d))
+            cell = ws.cell(row=row, column=d+3, value=cnt)
+            cell.alignment = CTR; cell.border = BDR
+            cell.font = Font(italic=True, color="555555")
+        row += 1
+
     for tl2, ts in [("日勤計", D), ("夜勤計", N), ("短夜勤計", SN), ("明け計", A),
                     ("早出計", E), ("遅出計", L), ("長日勤計", LD), ("時短計", ST),
                     ("休み計", O), ("研修計", R), ("休暇計", V)]:

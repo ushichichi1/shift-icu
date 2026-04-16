@@ -2118,6 +2118,15 @@ with tab4:
             for label, shift in _day_summary_items:
                 summary_data[label] = [sum(1 for s in names if schedule[s][d] == shift)
                                         for d in range(r_num_days)]
+            # 新人を除いた日勤系合計（新人がいる場合のみ）
+            _nh_days = _res.get("new_hire_days", {})
+            if _nh_days:
+                def _is_nh(s, d):
+                    return (d + 1) in _nh_days.get(s, set())
+                summary_data["日勤系計(新人除く)"] = [
+                    sum(1 for s in names if schedule[s][d] in DAY_SHIFTS and not _is_nh(s, d))
+                    for d in range(r_num_days)
+                ]
             # 日勤系合計列を追加
             summary_data["日勤系計"] = [
                 sum(1 for s in names if schedule[s][d] in DAY_SHIFTS)
