@@ -2126,7 +2126,7 @@ with tab4:
                 summary_data[label] = [sum(1 for s in names if schedule[s][d] == shift)
                                         for d in range(r_num_days)]
             # 新人を除いた日勤系合計（新人がいる場合のみ）
-            _nh_days = _res.get("new_hire_days", {})
+            _nh_days = result.get("new_hire_days", {})
             if _nh_days:
                 def _is_nh(s, d):
                     return (d + 1) in _nh_days.get(s, set())
