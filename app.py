@@ -362,7 +362,8 @@ def _reqs_to_df(reqs_dict, staff_list, num_days):
 
 _SETTINGS_WIDGET_MAP = {
     "year": "inp_year", "month": "inp_month",
-    "min_day_staff": "inp_min_day", "night_staff_count": "inp_night_count",
+    "min_day_staff": "inp_min_day", "min_day_staff_excl_new": "inp_min_day_excl",
+    "night_staff_count": "inp_night_count",
     "max_night_regular": "inp_max_n_reg", "pref_night_regular": "inp_pref_n_reg",
     "max_night_dedicated": "inp_max_n_ded", "pref_night_dedicated": "inp_pref_n_ded",
     "max_consecutive": "inp_max_consec", "pref_consecutive": "inp_pref_consec",
@@ -1094,7 +1095,10 @@ else:
     public_off = st.sidebar.number_input("公休日数", 0, num_days, auto_public_off, key="inp_po_val")
     po_override = public_off
 
-min_day = st.sidebar.number_input("日勤最低人数", 1, 20, 5, key="inp_min_day")
+min_day = st.sidebar.number_input("日勤最低人数（全体）", 1, 20, 5, key="inp_min_day",
+                                  help="新人込みの1日あたり最低日勤人数")
+min_day_excl = st.sidebar.number_input("日勤最低人数（新人除く）", 0, 20, 4, key="inp_min_day_excl",
+                                        help="新人を除いた経験者の1日あたり最低人数")
 night_count = st.sidebar.number_input("夜勤人数/日", 1, 5, 2, key="inp_night_count")
 
 st.sidebar.markdown("---")
@@ -1185,7 +1189,8 @@ nurse_ratio = _ratio_label  # 表示用
 settings = {
     "year": year, "month": month,
     "public_off_override": po_override,
-    "min_day_staff": min_day, "night_staff_count": night_count,
+    "min_day_staff": min_day, "min_day_staff_excl_new": min_day_excl,
+    "night_staff_count": night_count,
     "max_night_regular": max_n_reg, "pref_night_regular": pref_n_reg,
     "max_night_dedicated": max_n_ded, "pref_night_dedicated": pref_n_ded,
     "max_consecutive": max_consec, "pref_consecutive": pref_consec,

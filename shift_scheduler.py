@@ -134,7 +134,8 @@ SETTINGS_DEF = [
     ("対象年",             2026, "西暦4桁"),
     ("対象月",             5,    "1〜12"),
     ("公休日数",           "",   "空欄=自動(土日祝) 数値=手動指定"),
-    ("日勤最低人数",       5,    "1日あたり（時短含む）"),
+    ("日勤最低人数",       5,    "1日あたり（新人込み全体）"),
+    ("日勤最低人数（新人除く）", 4, "1日あたり（新人を除いた経験者）"),
     ("夜勤人数",           2,    "1日あたりの固定人数"),
     ("夜勤上限（通常）",   5,    "月あたり最大回数"),
     ("夜勤推奨（通常）",   4,    "月あたり推奨回数"),
@@ -146,7 +147,8 @@ SETTINGS_DEF = [
     ("祝日",               "",   "日付をカンマ区切り 例: 3,4,5"),
 ]
 SETTINGS_KEYS = [
-    "year", "month", "public_off_override", "min_day_staff", "night_staff_count",
+    "year", "month", "public_off_override", "min_day_staff", "min_day_staff_excl_new",
+    "night_staff_count",
     "max_night_regular", "pref_night_regular",
     "max_night_dedicated", "pref_night_dedicated",
     "max_consecutive", "pref_consecutive", "solver_time_limit", "holidays",
@@ -780,6 +782,7 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         v = settings.get(k)
         return v if v is not None else d
     min_day     = S("min_day_staff", 5)
+    min_day_excl = S("min_day_staff_excl_new", 4)  # 新人除く日勤最低人数
     night_count = S("night_staff_count", 2)
     max_n_reg   = S("max_night_regular", 5)
     pref_n_reg  = S("pref_night_regular", 4)
@@ -1061,18 +1064,31 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             if shift_type == "休暇" and 1 <= day_num <= num_days:
                 vacation_days.setdefault(s, set()).add(day_num - 1)
 
-    # 日勤最低人数（ソフト制約: 不足時はペナルティ + ハード下限）
+    # 日勤最低人数（全体: 新人込み）— ソフト制約 + ハード下限
     # 早出・遅出・時短・長日勤も日勤系としてカウント
     day_short = {}
-    # ハード下限: min_day - 1 （目標-1人まではハード制約で保証）
     _hard_min_day = max(2, min_day - 1)
     for d in days:
         day_sum = pulp.lpSum(x[s, d, t] for s in names for t in DAY_SHIFTS)
         ds = pulp.LpVariable(f"day_short_{d}", lowBound=0)
         prob += ds >= min_day - day_sum
         day_short[d] = ds
-        # ハード下限
         prob += day_sum >= _hard_min_day
+
+    # 日勤最低人数（新人除く）— 経験者のみのハード制約
+    day_short_excl = {}
+    if new_hire_staff and min_day_excl > 0:
+        for d in days:
+            # その日、新人でないスタッフの日勤系合計
+            non_nh = [s for s in names if not is_new_hire_on(s, d)]
+            if non_nh:
+                day_sum_excl = pulp.lpSum(x[s, d, t] for s in non_nh for t in DAY_SHIFTS)
+                ds_e = pulp.LpVariable(f"day_short_excl_{d}", lowBound=0)
+                prob += ds_e >= min_day_excl - day_sum_excl
+                day_short_excl[d] = ds_e
+                # ハード下限: min_day_excl - 1
+                prob += day_sum_excl >= max(1, min_day_excl - 1)
+        print(f"  日勤最低(新人除く): {min_day_excl}人/日 (対象{len([s for s in names if not new_hire_map.get(s)])}人)")
     # 夜勤人数: 夜勤(N) + 短夜勤(SN) の合計
     # --- 夜勤研修モデル ---
     # 研修スタッフは通常メンバーとして夜勤に入る。
@@ -1550,7 +1566,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     # 優先順位（重い順に違反しにくい）:
     #   P0 A夜勤欠            300  - 夜勤リーダー不在は極力回避
     #   P1 希望未達            250  - スタッフ希望を尊重（ハード近似）
-    #   P0 日勤最低人数        200  - 当日の運営人数
+    #   P0 日勤最低人数(全体)   200  - 当日の運営人数
+    #   P0 日勤最低(新人除く)  200  - 経験者の確保
     #   P2 AB+通常C夜勤ペア    200  - 経験不足ペア
     #   P3 AB+B夜勤ペア        100  - 中経験ペア
     #   P3 AB+AB夜勤ペア       100  - A不在代替
@@ -1566,7 +1583,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
     obj = (
         300 * pulp.lpSum(a_miss[d] for d in days)         # A夜勤リーダー欠 (P0)
         + 250 * pulp.lpSum(req_miss[k] for k in req_miss)   # 希望未達 (P1)
-        + 200 * pulp.lpSum(day_short[d] for d in days)      # 日勤最低人数不足 (P0)
+        + 200 * pulp.lpSum(day_short[d] for d in days)      # 日勤最低人数不足・全体 (P0)
+        + 200 * pulp.lpSum(day_short_excl[d] for d in day_short_excl)  # 新人除く不足 (P0)
         + 200 * pulp.lpSum(ab_c_pen[d] for d in ab_c_pen)   # AB+通常C (P2)
         + 100 * pulp.lpSum(ab_b_pen[d] for d in ab_b_pen)   # AB+B (P3)
         + 100 * pulp.lpSum(ab_ab_pen[d] for d in ab_ab_pen) # AB+AB (P3)
@@ -1640,8 +1658,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
 
         # コンソール出力
         _print_result(pat_num, schedule, names, tiers, weekly, parttime,
-                      days, holidays, weekends, public_off, min_day,
-                      a_miss, missed_requests, day_short, year, month)
+                      days, holidays, weekends, public_off, min_day, min_day_excl,
+                      a_miss, missed_requests, day_short, day_short_excl, year, month)
         # 夜勤均等度表示（N+SN合計）
         nd_counts = {s: sum(schedule[s].count(t) for t in NIGHT_SHIFTS) for s in ft_non_ded}
         if nd_counts:
@@ -1696,8 +1714,8 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
 
 
 def _print_result(pat_num, schedule, names, tiers, weekly, parttime,
-                  days, holidays, weekends, public_off, min_day,
-                  a_miss, missed, day_short, year, month):
+                  days, holidays, weekends, public_off, min_day, min_day_excl,
+                  a_miss, missed, day_short, day_short_excl, year, month):
     """1パターンのコンソール出力"""
     print(f"\n{'='*55}")
     print(f"  パターン {pat_num} - スタッフ別統計 (公休{public_off}日)")
@@ -1737,7 +1755,15 @@ def _print_result(pat_num, schedule, names, tiers, weekly, parttime,
             sd_str = ", ".join(f"{d}日(-{int(v)})" for d, v in short_days)
             print(f"  ⚠ 日勤不足: {sd_str} (目標{min_day}人)")
         else:
-            print(f"  ✓ 日勤最低{min_day}人達成")
+            print(f"  ✓ 日勤最低{min_day}人達成（全体）")
+    if day_short_excl:
+        short_excl = [(d+1, pulp.value(day_short_excl[d])) for d in day_short_excl
+                      if pulp.value(day_short_excl[d]) > 0.5]
+        if short_excl:
+            se_str = ", ".join(f"{d}日(-{int(v)})" for d, v in short_excl)
+            print(f"  ⚠ 日勤不足(新人除く): {se_str} (目標{min_day_excl}人)")
+        else:
+            print(f"  ✓ 日勤最低{min_day_excl}人達成（新人除く）")
     if missed:
         print(f"  ⚠ 未達希望:")
         for s, ds in missed.items():
