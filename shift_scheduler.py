@@ -1023,21 +1023,36 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
             # 前月末前日N(day-2) + day0にN → day2はO必須
             if num_days > 2:
                 prob += x[s, 0, N] <= x[s, 2, O]
+
+    # 休暇(V)日の事前計算（前月繰越・曜日制限で参照するため、ここで先に計算）
+    vacation_days = {}  # {staff_name: set of day_indices}
+    for s, reqs_s in requests.items():
+        if s not in names:
+            continue
+        for day_num, shift_type in reqs_s.items():
+            if shift_type == "休暇" and 1 <= day_num <= num_days:
+                vacation_days.setdefault(s, set()).add(day_num - 1)
+
     # 前月繰越
     for s in names:
+        s_vac_carry = vacation_days.get(s, set())
         if prev_m[s] == "夜":
-            prob += x[s, 0, A] == 1
+            if 0 not in s_vac_carry:
+                prob += x[s, 0, A] == 1
             # 通常スタッフは2日目=休、専従は夜or休
-            if not dedicated.get(s) and num_days > 1:
+            if not dedicated.get(s) and num_days > 1 and 1 not in s_vac_carry:
                 prob += x[s, 1, O] == 1
         elif prev_m[s] == "明":
             if dedicated.get(s):
-                prob += x[s, 0, A] == 0  # 専従: 明の翌日は夜or休
+                if 0 not in s_vac_carry:
+                    prob += x[s, 0, A] == 0  # 専従: 明の翌日は夜or休
             else:
-                prob += x[s, 0, O] == 1  # 通常: 明の翌日は休
-                prob += x[s, 0, A] == 0
+                if 0 not in s_vac_carry:
+                    prob += x[s, 0, O] == 1  # 通常: 明の翌日は休
+                    prob += x[s, 0, A] == 0
         else:
-            prob += x[s, 0, A] == 0
+            if 0 not in s_vac_carry:
+                prob += x[s, 0, A] == 0
         for d in days[1:]:
             prob += x[s, d, A] <= x[s, d-1, N]
     # 通常スタッフ: 休→夜(N)/短夜勤(SN) 禁止（専従は休→夜OK）
@@ -1055,14 +1070,6 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
                 if (d + 1) not in day_reqs:
                     prob += x[s, d, D] == 0
     # 時短スタッフ: D/N/SN/LDは変数削減で除外済み。早出・遅出は許可。
-    # 休暇(V)日の事前計算（パートタイム目標調整・V制約で使用）
-    vacation_days = {}  # {staff_name: set of day_indices}
-    for s, reqs_s in requests.items():
-        if s not in names:
-            continue
-        for day_num, shift_type in reqs_s.items():
-            if shift_type == "休暇" and 1 <= day_num <= num_days:
-                vacation_days.setdefault(s, set()).add(day_num - 1)
 
     # 日勤最低人数（全体: 新人込み）— ソフト制約 + ハード下限
     # 早出・遅出・時短・長日勤も日勤系としてカウント
@@ -1284,7 +1291,10 @@ def build_and_solve(staff_list, requests, settings, num_patterns=1,
         no_hol = no_holiday_map.get(s, False)
         no_we = no_weekend_map.get(s, False)
         if wd_set is not None or no_hol or no_we:
+            s_vac = vacation_days.get(s, set())
             for d in days:
+                if d in s_vac:
+                    continue  # 休暇日は曜日制限を適用しない（V=1が優先）
                 day_wd = (fwd + d) % 7  # 0=月..6=日
                 is_hol = (d + 1) in holidays
                 blocked = False
