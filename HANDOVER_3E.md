@@ -29,44 +29,69 @@ ICU看護師シフトを以下の制約下で自動生成:
 
 | 項目 | 場所 |
 |---|---|
-| ローカル作業ディレクトリ | `/Users/yoshikawayusuke/ShiftManagementBussiness/` |
-| GitHub | `https://github.com/ushichichi1/shift-scheduler` |
+| ローカル作業ディレクトリ | `/Users/yoshikawayusuke/ShiftManagementTool/shift-icu/` |
+| 親フォルダ（複数部署の目次） | `/Users/yoshikawayusuke/ShiftManagementTool/` |
+| ICU版 GitHub | `https://github.com/ushichichi1/shift-icu`（旧`shift-scheduler`をリネーム予定） |
+| 3E版 GitHub | `https://github.com/ushichichi1/shift-3e`（**新規作成が必要**） |
 | GitHubコミッタ | 吉川祐輔 |
-| Streamlit Cloud | GitHub連携で自動ビルド |
+| Streamlit Cloud | リポジトリ別にアプリを作成（ICU用・3E用で独立デプロイ） |
 
-### 重要ファイル
+### 重要ファイル（ICU版）
 ```
-ShiftManagementBussiness/
-├── shift_scheduler.py   ... ソルバー本体（約1900行）
-├── app.py               ... Streamlit UI（約2300行）
-├── create_test_data.py  ... テストデータ生成
-├── SPEC.md              ... 仕様書（ICU版・Beta完成時点）
-├── HANDOVER_3E.md       ... ← このファイル
-├── requirements.txt     ... 依存関係
-├── credentials.json     ... GSheet認証（.gitignoreで除外）
-└── .gitignore
+ShiftManagementTool/                  ← 親フォルダ（部署目次）
+├── README.md                         ← 全部署のインデックス
+│
+└── shift-icu/                        ← ICU版（独立リポ: shift-icu）
+    ├── shift_scheduler.py            ... ソルバー本体（約1900行）
+    ├── app.py                        ... Streamlit UI（約2300行）
+    ├── create_test_data.py           ... テストデータ生成
+    ├── SPEC.md                       ... 仕様書（ICU版・Beta完成時点）
+    ├── HANDOVER_3E.md                ... ← このファイル
+    ├── README.md                     ... ICU版の起動・概要
+    ├── requirements.txt              ... 依存関係
+    ├── credentials.json              ... GSheet認証（.gitignoreで除外）
+    └── .gitignore
+```
+
+### 3E版の配置予定
+```
+ShiftManagementTool/
+└── shift-3e/                         ← 3E版（独立リポ: shift-3e、新規作成）
+    ├── ... (ICU版をベースにカスタマイズ)
+    └── ...
 ```
 
 ---
 
-## 🔀 3E版を派生させる推奨フロー
+## 🔀 3E版を派生させる手順（方針決定済: 別リポジトリ独立）
 
-### Option A: 同一リポジトリでブランチ分岐（推奨）
+「システムや制約周りが大幅に刷新される」という方針のため、**別リポジトリ完全独立**で開発する。
+
+### ステップ
 ```bash
-cd /Users/yoshikawayusuke/ShiftManagementBussiness
-git checkout -b 3e-edition v1.0-beta
-# 3E用に改変
-git push -u origin 3e-edition
+cd /Users/yoshikawayusuke/ShiftManagementTool
+
+# 1. ICU版をテンプレートとしてコピー
+cp -r shift-icu shift-3e
+cd shift-3e
+
+# 2. 独立リポとして git を初期化し直し
+rm -rf .git
+git init
+git add -A
+git commit -m "Initial commit from shift-icu v1.0-beta template"
+
+# 3. GitHub で新規リポジトリ "shift-3e" を作成後
+git remote add origin https://github.com/ushichichi1/shift-3e.git
+git branch -M main
+git push -u origin main
+
+# 4. 3E固有の制約に改修開始
+# 5. Streamlit Cloud で新規アプリとしてデプロイ
 ```
-Streamlit Cloud側で「3e-edition」ブランチを指定した別アプリを立てれば、Beta版と並行運用できる。
 
-### Option B: 別リポジトリとしてフォーク
-3E版が構造的に大きく異なるなら、別リポジトリに切り分けたほうが管理しやすい。
-
-### Option C: 設定による切替（1コードベース）
-`病棟タイプ` 設定を追加し、ICU/3E で分岐。ハード制約が大きく違うと複雑化しやすい。
-
-**判断材料**: 3Eの制約がICUと**どの程度違うか**次第。次節を確認。
+### 親フォルダREADME更新
+`ShiftManagementTool/README.md` の「部署別バージョン」表に `3E` のエントリを追加して、状態・フォルダ・GitHub・Streamlit Cloud URL を記載。
 
 ---
 
@@ -135,14 +160,24 @@ ICUと異なる病棟ルールを適用:
 次セッションでは、以下を冒頭で共有するとスムーズ：
 
 ```
-作業ディレクトリ: /Users/yoshikawayusuke/ShiftManagementBussiness
-GitHubリポジトリ: https://github.com/ushichichi1/shift-scheduler
-Beta版完成タグ: v1.0-beta
+親フォルダ: /Users/yoshikawayusuke/ShiftManagementTool
+ICU版（テンプレート）: /Users/yoshikawayusuke/ShiftManagementTool/shift-icu (git: ushichichi1/shift-icu)
+3E版を新規作成: /Users/yoshikawayusuke/ShiftManagementTool/shift-3e （別リポ）
+ICU版完成タグ: v1.0-beta
 
-Beta版（ICU用）を3E版に派生させたい。
-まず HANDOVER_3E.md と SPEC.md を読んで現状を把握して。
+ICU版をテンプレートに、3E版を別リポジトリとして新規開発したい。
+まず shift-icu/HANDOVER_3E.md と shift-icu/SPEC.md を読んで現状を把握して。
 その上で 3E版でこう変えたい: [具体的な差分を記述]
 ```
+
+## 🔮 将来のTOPハブ構想
+
+ユーザーが最初にアクセスするTOP画面で、部署を選択して該当アプリへ遷移するハブを将来的に作成予定。
+- 1つのURL（例: `shift-management.streamlit.app`）からICU / 3E / ERなどを選択
+- 選択した部署の専用アプリへ遷移
+- 将来的には **部署横断の応援シフト最適化**（統合モデル）も視野
+
+このハブは `shift-management-hub` などの新規リポジトリとして別途作成する想定。各部署ツールは引き続き独立リポとして維持。
 
 ### 最初にやるべきこと（次セッション）
 1. `HANDOVER_3E.md`（このファイル）と `SPEC.md` を読む
